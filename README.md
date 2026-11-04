@@ -9,11 +9,13 @@ The subsystem is a Rust workspace with three crates:
 | `crates/ai-scheduler` | The **global** hardware scheduler. Every model runtime — LLM, TTS, later diffusion — registers here and competes for one memory pool. |
 | `crates/tts-core` | The TTS subsystem: model registry, engine adapters, runtime manager, voice library, audio manager. |
 | `crates/tts-server` | HTTP API (OpenAI compatible + internal extensions) and a command line interface. |
+| `apps/desktop` | The Tauri desktop application with the three pages of §9. |
 
 ```
-Tauri Desktop Application            HTTP client / CLI
-          │
-          ▼
+apps/desktop (Tauri)                HTTP client / CLI
+          │                                │
+          └──────────────┬─────────────────┘
+                         ▼
       TTS Module  ──────────────────  crates/tts-core
           │
           ├── Voice Library          crates/tts-core/src/voice
@@ -72,7 +74,7 @@ All state lives in `~/.local-ai-manager` (override with `--data-dir` or
 | §6 Voice library | `tts-core/src/voice/` — profile with `engine_config` kept verbatim, samples stored next to the profile, independent of any running model |
 | §7 Unified TTS API | `TTSRequest` / `EngineSpecificParameters` in `tts-core/src/types.rs`; OpenAI compatible route `POST /v1/audio/speech` |
 | §8 Global VRAM scheduling | `crates/ai-scheduler` — one pool, LRU eviction, pin, TTL sweeper, timeouts, `MemoryLease` |
-| §9 Desktop UI | The three pages of the specification map onto the API endpoints listed below; the Tauri shell itself is not part of this milestone |
+| §9 Desktop UI | `apps/desktop` — a Tauri application with the TTS Model Hub, the Voice Library and the Voice Design Studio |
 | §10 M1 scope | See the status table at the end |
 | §11 Hardware compatibility | `tts-core/src/hardware.rs` + `registry::check_compatibility` — Drama 3 is refused on machines without CUDA |
 | §11 Model installation | `tts-core/src/installer.rs` — the checkpoints are downloaded from the Hugging Face Hub, the compatibility is checked **before** the download starts |
@@ -291,15 +293,43 @@ tts-server serve --host 127.0.0.1 --port 8080
 ## Tests
 
 ```bash
-cargo test          # 50 tests
+cargo test          # 61 tests
 cargo clippy --all-targets
+
+cd apps/desktop
+npm install
+npm run build       # TypeScript and Vite
 ```
 
 The suite covers the scheduler (reservation, LRU eviction, pin, busy tenants,
 TTL sweep), the registry and the compatibility rules, the checkpoint
 installation against a fake hub, the voice library, the payload translation
 of both model families, the runtime manager (load, unload, model switching,
-pin protection, synthesis) and the HTTP API end to end.
+pin protection, synthesis), the life cycle of the server process and the HTTP
+API end to end.
+
+## Desktop application
+
+```bash
+cd apps/desktop
+npm install
+npm run tauri:dev      # development
+npm run tauri:build    # bundles Local AI Manager.app
+```
+
+The window starts the `tts-server` backend itself (free port, background
+process, log file in `logs/tts/desktop-server.log`) and stops it when the
+window closes — the backend follows the life cycle of the desktop process
+through a pipe, so no orphan process is left behind. The three pages of §9 are implemented against the HTTP API:
+
+* **TTS Model Hub** — name, version, size, format, memory estimate, running
+  state, Load / Unload, Pin, installation state with download and the engine
+  log.
+* **Voice Library** — name, description, model, sample player, creation time,
+  editing and deletion, filtered by model and language.
+* **Voice Design Studio** — description → model → generated sample → audition
+  and rating → adjusted prompt → saved profile, with the same description
+  rendered by several models for comparison.
 
 ## Status of the M1 scope
 
@@ -321,19 +351,23 @@ pin protection, synthesis) and the HTTP API end to end.
 
 **P1**
 
-- [x] Voice Design workflow (API and CLI)
+- [x] Voice Design workflow (API, CLI and the studio page)
 - [x] Qwen3-TTS Voice Design
 - [x] Voice Cloning
 - [x] Sample playback (download + local player)
 - [x] Voice profile editing
-- [x] Multi model comparison (call the same description on two models and
-      compare the samples)
+- [x] Multi model comparison (the studio renders the same description on
+      several models)
 - [x] Audio format conversion
 - [x] OpenAI compatible speech API
 
 **Not part of this milestone**
 
-The Tauri desktop shell and the three UI pages of §9 are not implemented; the
-HTTP API provides every endpoint they need. Cloud TTS, the voice market,
-multi user voice libraries, the speech editing workstation, multi GPU TTS and
-the screenplay editor are out of scope as stated in the specification.
+Cloud TTS, the voice market, multi user voice libraries, the speech editing
+workstation, multi GPU TTS and the screenplay editor are out of scope as
+stated in the specification.
+
+The engine adapters are written against the official SGLang-Omni
+documentation and covered by protocol tests, but no checkpoint has been
+loaded on real hardware yet — the mock engine is what exercises the whole
+pipeline in the test suite.

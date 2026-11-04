@@ -1,0 +1,27 @@
+[package]
+name = "local-ai-manager-desktop"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Desktop shell of the local AI manager, TTS subsystem."
+license = "MIT"
+
+# The desktop application has its own dependency tree and is not part of the
+# Rust workspace of the backend.
+[workspace]
+
+[lib]
+name = "local_ai_manager_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
