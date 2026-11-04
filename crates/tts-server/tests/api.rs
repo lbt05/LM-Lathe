@@ -1,0 +1,303 @@
+//! Integration tests of the HTTP API.
+
+use std::path::PathBuf;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use tower::ServiceExt;
+use tts_core::paths::AppPaths;
+use tts_core::service::TtsService;
+
+/// A temporary directory that removes itself when it is dropped.
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new(prefix: &str) -> Self {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{prefix}-{unique}"));
+        std::fs::create_dir_all(&path).unwrap();
+        Self { path }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn router(dir: &TempDir) -> axum::Router {
+    let service = TtsService::with_paths(AppPaths::with_root(dir.path())).unwrap();
+    tts_server::api::router(service)
+}
+
+async fn get(router: axum::Router, uri: &str) -> (StatusCode, axum::body::Body) {
+    let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    let status = response.status();
+    (status, response.into_body())
+}
+
+async fn post_json(
+    router: axum::Router,
+    uri: &str,
+    body: serde_json::Value,
+) -> (StatusCode, axum::body::Body) {
+    let request = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    let status = response.status();
+    (status, response.into_body())
+}
+
+async fn patch_json(
+    router: axum::Router,
+    uri: &str,
+    body: serde_json::Value,
+) -> (StatusCode, axum::body::Body) {
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    let status = response.status();
+    (status, response.into_body())
+}
+
+#[tokio::test]
+async fn the_health_endpoint_answers() {
+    let dir = TempDir::new("api");
+    let (status, body) = get(router(&dir), "/health").await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(json["status"], "ok");
+}
+
+#[tokio::test]
+async fn the_registry_is_exposed() {
+    let dir = TempDir::new("api");
+    let (status, body) = get(router(&dir), "/v1/tts/models").await;
+    assert_eq!(status, StatusCode::OK);
+    let models: Vec<serde_json::Value> =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert!(models.iter().any(|model| model["id"] == "mock-echo"));
+    assert!(models.iter().any(|model| model["id"] == "drama-3"));
+
+    // The compatibility verdict is part of the answer.
+    let drama = models
+        .iter()
+        .find(|model| model["id"] == "drama-3")
+        .unwrap();
+    assert!(drama["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|feature| feature == "multi_speaker"));
+}
+
+#[tokio::test]
+async fn the_openai_compatible_endpoint_synthesises_speech() {
+    let dir = TempDir::new("api");
+    let router = router(&dir);
+    let (status, body) = post_json(
+        router.clone(),
+        "/v1/audio/speech",
+        serde_json::json!({
+            "model": "mock",
+            "input": "你好，欢迎使用本地 AI 工作台。",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let bytes = body.collect().await.unwrap().to_bytes();
+    assert!(!bytes.is_empty());
+    // The payload is a RIFF/WAVE file.
+    assert_eq!(&bytes[0..4], b"RIFF");
+    assert_eq!(&bytes[8..12], b"WAVE");
+}
+
+#[tokio::test]
+async fn an_unknown_model_is_reported_as_not_found() {
+    let dir = TempDir::new("api");
+    let (status, body) = post_json(
+        router(&dir),
+        "/v1/audio/speech",
+        serde_json::json!({"model": "does-not-exist", "input": "x"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(json["kind"], "model_not_found");
+}
+
+#[tokio::test]
+async fn a_voice_is_designed_and_stored() {
+    let dir = TempDir::new("api");
+    let router = router(&dir);
+    let (status, body) = post_json(
+        router.clone(),
+        "/v1/tts/voices/design",
+        serde_json::json!({
+            "model": "mock",
+            "prompt": "青年女性，稚嫩、害羞、略带怯意",
+            "name": "府中贴身婢女",
+            "language": "Chinese",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(json["voice"]["name"], "府中贴身婢女");
+    assert_eq!(
+        json["voice"]["engine_config"]["voice_design_prompt"],
+        "青年女性，稚嫩、害羞、略带怯意"
+    );
+    assert!(json["sample"].as_str().unwrap().starts_with("samples/"));
+
+    // The voice is listed and can be updated.
+    let (status, body) = get(router.clone(), "/v1/tts/voices").await;
+    assert_eq!(status, StatusCode::OK);
+    let voices: Vec<serde_json::Value> =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(voices.len(), 1);
+    let id = voices[0]["id"].as_str().unwrap().to_string();
+
+    let (status, _) = patch_json(
+        router.clone(),
+        &format!("/v1/tts/voices/{id}"),
+        serde_json::json!({"name": "新名字"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = get(router, &format!("/v1/tts/voices/{id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(json["name"], "新名字");
+}
+
+#[tokio::test]
+async fn a_model_can_be_loaded_and_pinned() {
+    let dir = TempDir::new("api");
+    let router = router(&dir);
+
+    let (status, body) = post_json(
+        router.clone(),
+        "/v1/tts/models/mock-echo/load",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(json["state"], "running");
+
+    let (status, _) = post_json(
+        router.clone(),
+        "/v1/tts/models/mock-echo/pin",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, body) = get(router.clone(), "/v1/tts/status").await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(json["active_model"], "mock-echo");
+    assert_eq!(json["scheduler"]["tenants"][0]["pinned"], true);
+
+    let (status, _) = post_json(
+        router.clone(),
+        "/v1/tts/models/mock-echo/unload",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_generated_sample_can_be_downloaded() {
+    let dir = TempDir::new("api");
+    let router = router(&dir);
+    let (_, body) = post_json(
+        router.clone(),
+        "/v1/tts/voices/design",
+        serde_json::json!({"model": "mock", "prompt": "低沉的声音", "sample_text": "试听"}),
+    )
+    .await;
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    let id = json["voice"]["id"].as_str().unwrap().to_string();
+    let sample = json["sample"].as_str().unwrap().to_string();
+
+    let (status, body) = get(router, &format!("/v1/tts/voices/{id}/samples/{sample}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let bytes = body.collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[0..4], b"RIFF");
+}
+
+#[tokio::test]
+async fn the_model_list_reports_the_installation_state() {
+    let dir = TempDir::new("api");
+    let (status, body) = get(router(&dir), "/v1/tts/models").await;
+    assert_eq!(status, StatusCode::OK);
+    let models: Vec<serde_json::Value> =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    let qwen = models
+        .iter()
+        .find(|model| model["id"] == "qwen3-tts-1.7b-voicedesign")
+        .unwrap();
+    assert_eq!(qwen["installed"], false);
+    assert!(qwen["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("Qwen--Qwen3-TTS-12Hz-1.7B-VoiceDesign"));
+}
+
+#[tokio::test]
+async fn an_incompatible_model_is_not_installed() {
+    let dir = TempDir::new("api");
+    // Drama 3 needs CUDA, the test machine is a Mac.
+    let (status, body) = post_json(
+        router(&dir),
+        "/v1/tts/models/drama-3/install",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(json["kind"], "incompatible_hardware");
+}
+
+#[tokio::test]
+async fn the_installation_progress_is_reported() {
+    let dir = TempDir::new("api");
+    let (status, body) = get(router(&dir), "/v1/tts/models/mock-echo/install").await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(json["state"], "idle");
+    assert_eq!(json["model_id"], "mock-echo");
+}
