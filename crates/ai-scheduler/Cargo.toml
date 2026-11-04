@@ -1,0 +1,16 @@
+[package]
+name = "ai-scheduler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Global GPU / unified-memory scheduler shared by every local AI model runtime."
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+serde = { workspace = true }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tracing.workspace = true
+uuid.workspace = true
