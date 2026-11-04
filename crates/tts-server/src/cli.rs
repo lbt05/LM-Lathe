@@ -237,8 +237,22 @@ async fn serve(service: std::sync::Arc<TtsService>, args: ServeArgs) -> Result<(
         .with_context(|| format!("failed to bind {address}"))?;
     tracing::info!(%address, "TTS API listening");
     println!("TTS API listening on http://{address}");
+    // The desktop application asks the server to follow its life cycle.
+    let watch_stdin = std::env::var("TTS_SERVER_EXIT_ON_STDIN_EOF")
+        .map(|value| value == "1" || value == "true")
+        .unwrap_or(false);
+
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            if watch_stdin {
+                tokio::select! {
+                    _ = shutdown_signal() => {}
+                    _ = stdin_closed() => {}
+                }
+            } else {
+                shutdown_signal().await;
+            }
+        })
         .await
         .context("the HTTP server failed")?;
     Ok(())
@@ -248,6 +262,18 @@ async fn serve(service: std::sync::Arc<TtsService>, args: ServeArgs) -> Result<(
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
     tracing::info!("shutting down");
+}
+
+/// Waits until the standard input reaches its end.
+///
+/// The desktop application holds the write end of the pipe; when it dies the
+/// server sees the end and stops, so no backend is left behind.
+async fn stdin_closed() {
+    use tokio::io::AsyncReadExt;
+    let mut stdin = tokio::io::stdin();
+    let mut buffer = Vec::new();
+    let _ = stdin.read_to_end(&mut buffer).await;
+    tracing::info!("the parent process closed the connection");
 }
 
 /// Model commands.
