@@ -1,0 +1,9 @@
+# Build artifacts
+/target
+**/*.rs.bk
+
+# Local data directory
+.local-ai-manager/
+
+# macOS
+.DS_Store
