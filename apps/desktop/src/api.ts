@@ -292,10 +292,23 @@ export const api = {
   routes: () => request<Route[]>("/v1/routes"),
 
   /** Searches the Hugging Face Hub for models the runtime can serve. */
-  discover: (query: string, limit = 20) =>
-    request<DiscoveredModels>(
-      `/v1/tts/discover?q=${encodeURIComponent(query)}&limit=${limit}`,
-    ),
+  discover: async (query: string, limit = 20) => {
+    try {
+      return await request<DiscoveredModels>(
+        `/v1/tts/discover?q=${encodeURIComponent(query)}&limit=${limit}`,
+      );
+    } catch (err) {
+      // The route is new; a backend that does not know it is an older build.
+      if (err instanceof ApiError && err.status === 404) {
+        throw new ApiError(
+          "not_found",
+          "本地服务太旧，没有搜索接口。重启应用就会更新它。",
+          err.status,
+        );
+      }
+      throw err;
+    }
+  },
   /** Downloads a model that was found by the search. */
   installDiscovered: (repo: string) =>
     request<{ model_id: string; name: string }>("/v1/tts/discover/install", {
