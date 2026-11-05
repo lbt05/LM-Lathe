@@ -148,14 +148,30 @@ impl HubClient {
     /// query came back empty.
     pub async fn search(&self, query: &str, limit: usize) -> TtsResult<HubSearch> {
         let query = query.trim();
-        if query.is_empty() {
-            return Ok(HubSearch::default());
-        }
         let limit = limit.clamp(1, 50);
         // The hub answers with the most downloaded repositories first, and
         // those are often the ones the runtime cannot serve. The search
         // therefore asks for more than it shows.
         let fetch = (limit * 3).clamp(10, 150);
+        if query.is_empty() {
+            // The page opens with the models that are downloaded most often.
+            // Half of the place belongs to the language models and half to
+            // the speech models, so both are seen.
+            let half = (limit / 2).max(1);
+            let mut language = self.query(query, half, Some("gguf")).await?;
+            let mut speech = self.query(query, limit * 2, Some("text-to-speech")).await?;
+            language.retain(HubModel::is_runnable);
+            speech.retain(HubModel::is_runnable);
+            language.truncate(half);
+            speech.truncate(limit - half);
+            let mut models = language;
+            models.extend(speech);
+            let models = self.with_sizes(models).await;
+            return Ok(HubSearch {
+                models,
+                dropped: 0,
+            });
+        }
         let mut all = self.query(query, fetch, Some("gguf")).await?;
         all.extend(self.query(query, fetch, Some("text-to-speech")).await?);
         all.extend(self.query(query, fetch, Some("text-generation")).await?);
@@ -211,11 +227,12 @@ impl HubClient {
         filter: Option<&str>,
     ) -> TtsResult<Vec<HubModel>> {
         let mut url = format!(
-            "{}/api/models?search={}&limit={}&full=true&sort=downloads",
-            self.endpoint,
-            encode(query),
-            limit,
+            "{}/api/models?limit={}&full=true&sort=downloads",
+            self.endpoint, limit,
         );
+        if !query.is_empty() {
+            url.push_str(&format!("&search={}", encode(query)));
+        }
         if let Some(filter) = filter {
             url.push_str(&format!("&filter={}", encode(filter)));
         }
@@ -333,8 +350,13 @@ impl HubClient {
         };
         Ok(body
             .get("safetensors")
-            .and_then(|info| info.get("parameters"))
-            .and_then(|parameters| parameters.get("total"))
+            .and_then(|info| {
+                // The hub writes the number of the parameters below the
+                // weights of the file; older answers keep it inside the
+                // breakdown of the formats.
+                info.get("total")
+                    .or_else(|| info.get("parameters").and_then(|inner| inner.get("total")))
+            })
             .and_then(|total| total.as_u64()))
     }
 }

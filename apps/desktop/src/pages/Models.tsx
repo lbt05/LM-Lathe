@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   formatBytes,
@@ -158,7 +158,6 @@ export default function Models({
   const store = useStore();
   const [tab, setTab] = useState<"discover" | "local">("discover");
   const [type, setType] = useState("all");
-  const [installed, setInstalled] = useState("all");
   const [sort, setSort] = useState("memory");
   // Deleting a checkpoint removes gigabytes from the disk, the row waits for
   // a second click before it does.
@@ -193,12 +192,10 @@ export default function Models({
   const filter = useCallback(
     (model: Model) => {
       if (type !== "all" && purposeOf(model) !== type) return false;
-      if (installed === "yes" && !model.installed) return false;
-      if (installed === "no" && model.installed) return false;
       if (!matches(model, query)) return false;
       return true;
     },
-    [type, installed, query],
+    [type, query],
   );
 
   const bySort = useCallback(
@@ -211,10 +208,6 @@ export default function Models({
     [sort],
   );
 
-  const discover = useMemo(
-    () => bySort(catalog.filter(filter)),
-    [catalog, filter, bySort],
-  );
   const installedList = useMemo(
     () => bySort(local.filter(filter)),
     [local, filter, bySort],
@@ -251,35 +244,48 @@ export default function Models({
   }, [hubResults, hubSort]);
 
   // Searches the Hugging Face Hub. The hub is asked when the search is
-  // confirmed, not with every keystroke.
-  const searchHub = useCallback(async () => {
-    const query = hubQuery.trim();
-    if (!query) {
-      setHubResults([]);
-      setHubSearched(false);
-      return;
-    }
-    setHubLoading(true);
-    try {
-      const answer = await api.discover(query, 20);
-      setHubResults(answer.models);
-      setHubDropped(answer.dropped);
-      setHubSearched(true);
-      store.log(
-        "info",
-        `在 Hugging Face 上搜索 ${query}，找到 ${answer.models.length} 个模型`,
-      );
-    } catch (err) {
-      setHubResults([]);
-      setHubDropped(0);
-      setHubSearched(true);
-      const message = err instanceof Error ? err.message : String(err);
-      store.log("bad", `搜索失败：${message}`);
-      store.notify(message, "bad");
-    } finally {
-      setHubLoading(false);
-    }
-  }, [hubQuery, store]);
+  // confirmed, not with every keystroke. An empty query asks for the
+  // models that are downloaded most often.
+  const searchHub = useCallback(
+    async (wanted?: string) => {
+      const query = (wanted ?? hubQuery).trim();
+      setHubLoading(true);
+      try {
+        const answer = await api.discover(query, 20);
+        setHubResults(answer.models);
+        setHubDropped(answer.dropped);
+        setHubSearched(true);
+        store.log(
+          "info",
+          query
+            ? `在 Hugging Face 上搜索 ${query}，找到 ${answer.models.length} 个模型`
+            : `列出 Hugging Face 上最常用的 ${answer.models.length} 个模型`,
+        );
+      } catch (err) {
+        setHubResults([]);
+        setHubDropped(0);
+        setHubSearched(true);
+        const message = err instanceof Error ? err.message : String(err);
+        store.log("bad", `搜索失败：${message}`);
+        store.notify(message, "bad");
+      } finally {
+        setHubLoading(false);
+      }
+    },
+    [hubQuery, store],
+  );
+
+  // The page opens with the models that are downloaded most often, so
+  // there is something to look at before a word was typed. The search
+  // waits for the connection, because the address of the service is only
+  // known then.
+  const loadedBase = useRef<string | null>(null);
+  useEffect(() => {
+    if (!store.base) return;
+    if (loadedBase.current === store.base) return;
+    loadedBase.current = store.base;
+    void searchHub("");
+  }, [store.base, searchHub]);
 
   // Downloads a model of the hub. The model joins the catalogue of the
   // application, so its progress is reported like the progress of every
@@ -291,29 +297,6 @@ export default function Models({
         store.enqueue({
           id: started.model_id,
           name: started.name || model.name,
-          percent: 0,
-          bytes: 0,
-          bytesTotal: 0,
-          state: "running",
-        });
-        store.log("info", `开始下载 ${model.name}`);
-        store.notify(`已加入下载队列：${model.name}`);
-        await store.refresh();
-      } catch (err) {
-        store.log("bad", `下载 ${model.name} 失败`);
-        store.notify(err instanceof Error ? err.message : String(err), "bad");
-      }
-    },
-    [store],
-  );
-
-  const install = useCallback(
-    async (model: Model) => {
-      try {
-        await api.installModel(model.id);
-        store.enqueue({
-          id: model.id,
-          name: model.name,
           percent: 0,
           bytes: 0,
           bytesTotal: 0,
@@ -468,8 +451,7 @@ export default function Models({
                     ? `${hubResults.length} 个结果${hubDropped ? ` · ${hubDropped} 个不支持` : ""}`
                     : "搜索仓库里的模型"
               }
-            />
-            <div className="filters">
+            />            <div className="filters">
               <span className="fgroup">
                 <input
                   className="finput"
@@ -485,7 +467,7 @@ export default function Models({
               <button
                 className="btn btn--primary"
                 type="button"
-                disabled={hubLoading || !hubQuery.trim()}
+                disabled={hubLoading}
                 onClick={() => void searchHub()}
               >
                 <Icon name="search" />
@@ -529,7 +511,9 @@ export default function Models({
                             <span className="sub">
                               {model.quant
                                 ? `${model.quant} · 只下载这一个量化`
-                                : "GGUF 权重"}
+                                : model.format === "gguf"
+                                  ? "GGUF 权重"
+                                  : "safetensors 权重"}
                             </span>
                           </span>
                         </td>
@@ -549,14 +533,18 @@ export default function Models({
                         <td>{model.format}</td>
                         <td>
                           <div className="tbl__actions">
-                            <button
-                              className="btn btn--primary"
-                              type="button"
-                              onClick={() => void installDiscovered(model)}
-                            >
-                              <Icon name="download" />
-                              下载
-                            </button>
+                            {model.installed ? (
+                              <Tag tone="ok">已下载</Tag>
+                            ) : (
+                              <button
+                                className="btn btn--primary"
+                                type="button"
+                                onClick={() => void installDiscovered(model)}
+                              >
+                                <Icon name="download" />
+                                下载
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -580,12 +568,15 @@ export default function Models({
               />
             )}
           </section>
+        </>
+      ) : null}
 
-          <section className="sheet">
+      {tab === "local" ? (
+        <section className="sheet">
           <SheetHead
-            eyebrow="REGISTRY · CATALOG"
-            title="本地注册表"
-            meta={`${catalog.length} 个模型 · 应用内建`}
+            eyebrow="LOCAL · INSTALLED"
+            title="已下载"
+            meta={`${local.length} 个模型 · ${formatBytes(totalBytes)}`}
           />
           <div className="filters">
             <FilterGroup
@@ -597,16 +588,6 @@ export default function Models({
                 ["TTS", "TTS"],
               ]}
               onChange={setType}
-            />
-            <FilterGroup
-              label="状态"
-              value={installed}
-              options={[
-                ["all", "全部"],
-                ["yes", "已下载"],
-                ["no", "未下载"],
-              ]}
-              onChange={setInstalled}
             />
             <SortSelect
               value={sort}
@@ -622,118 +603,11 @@ export default function Models({
                 className="finput"
                 type="search"
                 value={query}
-                placeholder="搜索本地模型…"
+                placeholder="搜索已下载的模型…"
                 onChange={(event) => onQueryChange(event.target.value)}
               />
             </span>
           </div>
-          {discover.length ? (
-            <div className="tablewrap">
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th>模型</th>
-                    <th>用途</th>
-                    <th>格式</th>
-                    <th>参数量</th>
-                    <th className="num">文件大小</th>
-                    <th className="num">显存估算</th>
-                    <th>就绪度</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {discover.map((model) => (
-                    <tr
-                      key={model.id}
-                      data-act="pick"
-                      tabIndex={0}
-                      aria-selected={selected(model)}
-                      onClick={() => pick(model)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") pick(model);
-                      }}
-                    >
-                      <td>
-                        <span className="cellstack">
-                          <span className="cellrow">
-                            <TypeMark type={purposeOf(model)} />
-                            <span className="name">{model.name}</span>
-                          </span>
-                          <span className="sub">
-                            {capabilitiesOf(model).join(" · ")}
-                          </span>
-                        </span>
-                      </td>
-                      <td>
-                        <Tag tone="tts">{purposeOf(model)}</Tag>
-                      </td>
-                      <td>{formatOf(model)}</td>
-                      <td>{model.version || "—"}</td>
-                      <td className="num">{formatBytes(model.size_bytes)}</td>
-                      <td className="num">
-                        {formatBytes(model.estimated_memory_bytes)}
-                      </td>
-                      <td>
-                        {model.compatible ? (
-                          <Tag tone="ok">兼容</Tag>
-                        ) : (
-                          <Tag tone="bad">不兼容</Tag>
-                        )}
-                      </td>
-                      <td>
-                        <div className="tbl__actions">
-                          <button
-                            className="btn btn--primary"
-                            type="button"
-                            disabled={!model.compatible}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void install(model);
-                            }}
-                          >
-                            <Icon name="download" />
-                            下载
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <Empty
-              title={store.base ? "没有匹配的模型" : "尚未连接本地服务"}
-              text={
-                store.base
-                  ? "换个筛选条件，或清空搜索框。"
-                  : "模型清单来自本地的 tts-server。"
-              }
-              action={
-                store.base ? undefined : (
-                  <button
-                    className="btn"
-                    type="button"
-                    onClick={() => void store.connect()}
-                  >
-                    重新连接
-                  </button>
-                )
-              }
-            />
-          )}
-          </section>
-        </>
-      ) : null}
-
-      {tab === "local" ? (
-        <section className="sheet">
-          <SheetHead
-            eyebrow="LOCAL · INSTALLED"
-            title="已下载"
-            meta={`${local.length} 个模型 · ${formatBytes(totalBytes)}`}
-          />
           {installedList.length ? (
             <div className="tablewrap">
               <table className="tbl">
