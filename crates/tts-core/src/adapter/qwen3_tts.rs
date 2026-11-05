@@ -27,6 +27,33 @@ use crate::voice::VoiceProfile;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Qwen3TTSProtocol;
 
+/// The kind of a Qwen3-TTS checkpoint.
+///
+/// The three kinds are told apart by the name of the repository, because the
+/// checkpoint itself is the only thing that knows what it can do: a voice
+/// design checkpoint writes a voice from a description, a custom voice
+/// checkpoint speaks with a built-in speaker and a base checkpoint clones
+/// the voice of a reference clip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointKind {
+    VoiceDesign,
+    CustomVoice,
+    Base,
+}
+
+impl CheckpointKind {
+    /// The kind implied by the name of the repository.
+    fn of(repo: &str) -> Self {
+        if repo.contains("VoiceDesign") {
+            CheckpointKind::VoiceDesign
+        } else if repo.contains("Base") {
+            CheckpointKind::Base
+        } else {
+            CheckpointKind::CustomVoice
+        }
+    }
+}
+
 impl Qwen3TTSProtocol {
     /// Task type implied by the checkpoint.
     fn default_task_type(repo: &str) -> Qwen3TtsTaskType {
@@ -36,6 +63,195 @@ impl Qwen3TTSProtocol {
             Qwen3TtsTaskType::CustomVoice
         }
     }
+
+    /// The language name mlx-audio expects.
+    ///
+    /// The checkpoint carries a table of languages that are named in
+    /// English; every other spelling is left to the automatic detection.
+    fn mlx_language(language: &str) -> String {
+        let name = match language.trim().to_lowercase().as_str() {
+            "zh" | "zh-cn" | "zh-hans" | "zh-tw" | "chinese" | "中文" => "chinese",
+            "en" | "en-us" | "en-gb" | "english" | "英文" => "english",
+            "de" | "de-de" | "german" => "german",
+            "it" | "it-it" | "italian" => "italian",
+            "pt" | "pt-br" | "portuguese" => "portuguese",
+            "es" | "es-es" | "spanish" => "spanish",
+            "ja" | "ja-jp" | "japanese" => "japanese",
+            "ko" | "ko-kr" | "korean" => "korean",
+            "fr" | "fr-fr" | "french" => "french",
+            "ru" | "ru-ru" | "russian" => "russian",
+            _ => "auto",
+        };
+        name.to_string()
+    }
+
+    /// Payload of the mlx-audio server.
+    ///
+    /// The server reads the checkpoint that the `model` field names and
+    /// routes the request by the kind of that checkpoint: a voice design
+    /// checkpoint needs `instruct`, a custom voice checkpoint needs `voice`
+    /// and a base checkpoint clones with `ref_audio` and `ref_text`.
+    fn build_mlx_audio_payload(
+        request: &TTSRequest,
+        ctx: &RequestContext,
+        params: &crate::types::Qwen3TtsParameters,
+    ) -> TtsResult<Value> {
+        let mut payload = Map::new();
+        // The server loads the checkpoint of the request, so the path on the
+        // disk is the name of the model.
+        let model = ctx
+            .model_path
+            .clone()
+            .unwrap_or_else(|| ctx.model_repo.clone());
+        payload.insert("model".to_string(), Value::String(model));
+        payload.insert("input".to_string(), Value::String(request.text.clone()));
+
+        let kind = match params.task_type {
+            Some(Qwen3TtsTaskType::VoiceDesign) => CheckpointKind::VoiceDesign,
+            Some(Qwen3TtsTaskType::CustomVoice) => CheckpointKind::CustomVoice,
+            None => CheckpointKind::of(&ctx.model_repo),
+        };
+        let instructions = params
+            .instructions
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        match kind {
+            CheckpointKind::VoiceDesign => {
+                let instructions = instructions.ok_or_else(|| {
+                    TtsError::InvalidRequest(
+                        "voice design requires a non-empty `instructions` description".to_string(),
+                    )
+                })?;
+                payload.insert(
+                    "instruct".to_string(),
+                    Value::String(instructions.to_string()),
+                );
+            }
+            CheckpointKind::CustomVoice => {
+                let speaker = params
+                    .speaker
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty() && *value != "default");
+                let speaker = speaker.ok_or_else(|| {
+                    TtsError::InvalidRequest(
+                        "a custom voice checkpoint needs a speaker, e.g. `Vivian`, `Ryan`, \
+                         `Dylan` or `Eric`"
+                            .to_string(),
+                    )
+                })?;
+                payload.insert("voice".to_string(), Value::String(speaker.to_string()));
+                // The custom voice checkpoint takes the instruction as a
+                // control of the style.
+                if let Some(instructions) = instructions {
+                    payload.insert(
+                        "instruct".to_string(),
+                        Value::String(instructions.to_string()),
+                    );
+                }
+            }
+            CheckpointKind::Base => {
+                // The base checkpoint has no built-in speaker: it clones the
+                // voice of a reference clip.
+                let reference = params.references.first().ok_or_else(|| {
+                    TtsError::InvalidRequest(
+                        "a base checkpoint clones a voice and needs a reference clip".to_string(),
+                    )
+                })?;
+                payload.insert(
+                    "ref_audio".to_string(),
+                    Value::String(Self::reference_path(reference)?),
+                );
+                if let Some(text) = reference.text.as_deref().map(str::trim) {
+                    if !text.is_empty() {
+                        payload.insert("ref_text".to_string(), Value::String(text.to_string()));
+                    }
+                }
+            }
+        }
+
+        if let Some(language) = &request.language {
+            payload.insert(
+                "lang_code".to_string(),
+                Value::String(Self::mlx_language(language)),
+            );
+        }
+        payload.insert("response_format".to_string(), Value::String("wav".to_string()));
+        Ok(Value::Object(payload))
+    }
+
+    /// The path of a reference clip on the disk.
+    ///
+    /// mlx-audio reads the file itself, so a clip that is only known as
+    /// base64 is written next to the other temporary files first.
+    fn reference_path(reference: &crate::types::AudioReference) -> TtsResult<String> {
+        if let Some(path) = reference.audio_path.as_deref().map(str::trim) {
+            if !path.is_empty() {
+                if path.starts_with("http://") || path.starts_with("https://") {
+                    return Err(TtsError::InvalidRequest(format!(
+                        "the mlx-audio engine needs a local reference clip, but the request \
+                         names the URL `{path}`"
+                    )));
+                }
+                return Ok(path.to_string());
+            }
+        }
+        let data = reference.data.as_deref().ok_or_else(|| {
+            TtsError::InvalidRequest(
+                "the reference clip has neither a path nor a payload".to_string(),
+            )
+        })?;
+        let bytes = base64_decode(data)
+            .ok_or_else(|| TtsError::InvalidRequest("the reference clip is not base64".to_string()))?;
+        let directory = std::env::temp_dir().join("lm-lathe-references");
+        std::fs::create_dir_all(&directory)
+            .map_err(|err| TtsError::io(&directory, err))?;
+        let path = directory.join(format!("{}.wav", fnv1a(data)));
+        if !path.exists() {
+            std::fs::write(&path, bytes).map_err(|err| TtsError::io(&path, err))?;
+        }
+        Ok(path.to_string_lossy().to_string())
+    }
+}
+
+/// The 64 bit FNV-1a hash of a string, used to name temporary files.
+fn fnv1a(value: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// Decodes a base64 payload, ignoring the whitespace of the lines.
+fn base64_decode(value: &str) -> Option<Vec<u8>> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut lookup = [255u8; 256];
+    for (index, byte) in TABLE.iter().enumerate() {
+        lookup[*byte as usize] = index as u8;
+    }
+    let mut out = Vec::new();
+    let mut buffer: u32 = 0;
+    let mut bits = 0;
+    for byte in value.bytes() {
+        if byte.is_ascii_whitespace() || byte == b'=' {
+            continue;
+        }
+        let index = lookup[byte as usize];
+        if index == 255 {
+            return None;
+        }
+        buffer = (buffer << 6) | u32::from(index);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    Some(out)
 }
 
 impl ModelProtocol for Qwen3TTSProtocol {
@@ -92,6 +308,9 @@ impl ModelProtocol for Qwen3TTSProtocol {
             .as_qwen3_tts()
             .cloned()
             .unwrap_or_default();
+        if ctx.mode == EngineMode::MlxAudio {
+            return Self::build_mlx_audio_payload(request, ctx, &params);
+        }
         let mut payload = Map::new();
 
         if ctx.mode != EngineMode::MlxNative {
@@ -230,6 +449,7 @@ impl TTSAdapter for Qwen3TTSAdapter {
                 .model_repo
                 .clone()
                 .unwrap_or_else(|| handle.model_id.clone()),
+            model_path: handle.model_path.clone(),
         };
         let payload = self.protocol.build_payload(&request, &ctx)?;
         let raw = EngineAdapter::synthesize_raw(self.engine.as_ref(), &handle, &payload).await?;

@@ -34,6 +34,9 @@ function boundModels(store: ReturnType<typeof useStore>, engine: EngineAsset) {
   return store.models.filter((model) => engine.model_engine_ids.includes(model.engine_id));
 }
 
+/** The engines that speak instead of answering. */
+const TTS_ENGINES = ["sglang-omni", "sglang-omni-mlx", "mlx-audio"];
+
 export default function Runtimes() {
   const store = useStore();
   const [progress, setProgress] = useState<Record<string, EngineInstallProgress>>({});
@@ -144,7 +147,7 @@ export default function Runtimes() {
                 <span className="qrow__meter">
                   <Meter
                     percent={entry.percent ?? 0}
-                    kind={entry.engine_id === "sglang-omni" ? "tts" : "llm"}
+                    kind={TTS_ENGINES.includes(entry.engine_id) ? "tts" : "llm"}
                   />
                 </span>
                 <span className="sub">{entry.message}</span>

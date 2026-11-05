@@ -18,6 +18,11 @@ pub struct RequestContext {
     pub mode: crate::types::EngineMode,
     /// Repository id or path of the model.
     pub model_repo: String,
+    /// Local directory of the checkpoint, when it is known.
+    ///
+    /// The engines that load the checkpoint themselves need the path on the
+    /// disk instead of the repository id.
+    pub model_path: Option<String>,
 }
 
 /// Model specific parameter translation.

@@ -109,6 +109,12 @@ pub enum EngineMode {
     #[default]
     SglangOmni,
     MlxNative,
+    /// A checkpoint served by the mlx-audio server on Apple Silicon.
+    ///
+    /// The native MLX runtime only speaks the 0.6B CustomVoice checkpoint,
+    /// while mlx-audio reads the 1.7B checkpoints as well and adds the voice
+    /// cloning of the Base checkpoints.
+    MlxAudio,
     /// A GGUF checkpoint served by llama.cpp.
     LlamaCpp,
     /// The synthetic engine of the tests.
@@ -121,6 +127,7 @@ impl EngineMode {
         match self {
             EngineMode::SglangOmni => "sglang_omni",
             EngineMode::MlxNative => "mlx_native",
+            EngineMode::MlxAudio => "mlx_audio",
             EngineMode::LlamaCpp => "llama_cpp",
             #[cfg(feature = "mock-engine")]
             EngineMode::Mock => "mock",
@@ -503,6 +510,11 @@ pub struct RuntimeHandle {
     pub model_id: String,
     /// Public repository id of the model, sent to the engine as `model`.
     pub model_repo: Option<String>,
+    /// Local directory of the checkpoint.
+    ///
+    /// The engines that load the checkpoint on their own — mlx-audio names
+    /// the directory in the request — need the path on the disk.
+    pub model_path: Option<String>,
     /// Engine that hosts the model.
     pub engine_id: String,
     /// OS process id of the engine, when it is a separate process.

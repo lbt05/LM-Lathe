@@ -78,6 +78,11 @@ pub struct PlatformDelivery {
     pub distribution: EngineDistribution,
     /// PyPI package for a `python-package` delivery.
     pub package: Option<String>,
+    /// Extras of the PyPI package, e.g. `server`.
+    ///
+    /// The server of mlx-audio lives behind an extra, so the delivery names
+    /// it here and the installer asks for `package[extras]`.
+    pub extras: Option<String>,
     /// How the versions of a source engine are named.
     pub source_ref: SourceRef,
     /// Script inside the checkout that installs the engine.
@@ -90,6 +95,13 @@ pub struct PlatformDelivery {
     pub script_args: Vec<String>,
     /// Path of the program, relative to the directory of the version.
     pub program_path: Option<String>,
+    /// Python version of the virtual environment of a `python-package`
+    /// delivery.
+    ///
+    /// The delivery creates the environment with `uv` when a version is
+    /// named, because the system Python is often too new for the wheels of
+    /// the package.
+    pub python_version: Option<String>,
     /// The other binaries the runtime provides.
     pub programs: Vec<String>,
     /// Tools that have to be present on the machine.
@@ -214,9 +226,11 @@ fn delivery(
         distribution,
         source_ref: SourceRef::Tag,
         package: None,
+        extras: None,
         install_script: None,
         script_args: Vec::new(),
         program_path: None,
+        python_version: None,
         programs: Vec::new(),
         requirements: Vec::new(),
         note: None,
@@ -335,6 +349,50 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
             ],
             model_engine_ids: vec!["sglang-omni".to_string()],
             managed_model_engine_ids: vec!["sglang-omni".to_string()],
+            build_tags: Vec::new(),
+            model_programs: Vec::new(),
+        },
+        EngineDefinition {
+            id: "mlx-audio".to_string(),
+            name: "mlx-audio".to_string(),
+            summary:
+                "Apple Silicon 上的 MLX 语音服务：1.7B Qwen3-TTS 的声音设计与克隆都走这条路径。"
+                    .to_string(),
+            distribution: EngineDistribution::PythonPackage,
+            repository: Some("Blaizzy/mlx-audio".to_string()),
+            program: "mlx_audio.server".to_string(),
+            system_program: None,
+            // The model is not a command line argument: mlx-audio loads the
+            // checkpoint that the request names, so one server serves every
+            // checkpoint of the catalogue.
+            server_args: vec![
+                "--host".to_string(),
+                "127.0.0.1".to_string(),
+                "--port".to_string(),
+                "{port}".to_string(),
+            ],
+            capabilities: vec![
+                "tts".to_string(),
+                "voice-cloning".to_string(),
+                "voice-design".to_string(),
+                "mlx".to_string(),
+                "unified-memory".to_string(),
+            ],
+            deliveries: vec![PlatformDelivery {
+                package: Some("mlx-audio".to_string()),
+                extras: Some("server".to_string()),
+                program_path: Some("venv/bin/mlx_audio.server".to_string()),
+                python_version: Some("3.12".to_string()),
+                requirements: vec!["uv".to_string()],
+                note: Some(
+                    "PyPI 发行版，装进独立的 Python 3.12 虚拟环境；服务端是 OpenAI 兼容的 \
+                     mlx_audio.server，模型由请求指定。"
+                        .to_string(),
+                ),
+                ..delivery(&["darwin-arm64"], EngineDistribution::PythonPackage)
+            }],
+            model_engine_ids: vec!["mlx-audio".to_string()],
+            managed_model_engine_ids: vec!["mlx-audio".to_string()],
             build_tags: Vec::new(),
             model_programs: Vec::new(),
         },
@@ -1134,39 +1192,86 @@ impl EngineAssetManager {
             .delivery_here()
             .and_then(|delivery| delivery.package.clone())
             .ok_or_else(|| TtsError::Internal(format!("引擎 `{}` 没有 Python 包", definition.id)))?;
+        // The server of some packages lives behind an extra, so the
+        // requirement carries it.
+        let requirement = match definition
+            .delivery_here()
+            .and_then(|delivery| delivery.extras.clone())
+        {
+            Some(extras) if !extras.is_empty() => format!("{package}[{extras}]=={version}"),
+            _ => format!("{package}=={version}"),
+        };
 
         self.update_progress(&definition.id, |progress| {
             progress.message = "创建虚拟环境".to_string();
             progress.percent = Some(10.0);
         });
         let venv = target.join("venv");
-        let python = python_command();
-        let status = Command::new(&python)
-            .arg("-m")
-            .arg("venv")
-            .arg(&venv)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .status()
-            .await
-            .map_err(|err| TtsError::Internal(format!("无法创建虚拟环境：{err}")))?;
-        if !status.success() {
-            return Err(TtsError::Internal(format!(
-                "虚拟环境创建失败（{python}）：{status}"
-            )));
+        // A delivery may name a Python version: the wheels of the package
+        // are often not built for the Python of the machine, so `uv` builds
+        // the environment with the version the package asks for.
+        let python_version = definition
+            .delivery_here()
+            .and_then(|delivery| delivery.python_version.clone());
+        let uv = uv_command();
+        if let Some(version) = &python_version {
+            let status = Command::new(&uv)
+                .arg("venv")
+                .arg("--python")
+                .arg(version)
+                .arg(&venv)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .status()
+                .await
+                .map_err(|err| TtsError::Internal(format!("无法创建虚拟环境：{err}")))?;
+            if !status.success() {
+                return Err(TtsError::Internal(format!(
+                    "虚拟环境创建失败（{uv} venv --python {version}）：{status}"
+                )));
+            }
+        } else {
+            let python = python_command();
+            let status = Command::new(&python)
+                .arg("-m")
+                .arg("venv")
+                .arg(&venv)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .status()
+                .await
+                .map_err(|err| TtsError::Internal(format!("无法创建虚拟环境：{err}")))?;
+            if !status.success() {
+                return Err(TtsError::Internal(format!(
+                    "虚拟环境创建失败（{python}）：{status}"
+                )));
+            }
         }
 
-        let pip = venv.join("bin").join("pip");
         self.update_progress(&definition.id, |progress| {
-            progress.message = format!("安装 {package}=={version}");
+            progress.message = format!("安装 {requirement}");
             progress.percent = Some(25.0);
         });
-        let mut child = Command::new(&pip)
-            .arg("install")
-            .arg("--disable-pip-version-check")
-            .arg("--no-input")
-            .arg(format!("{package}=={version}"))
+        let mut install = Command::new(&uv);
+        if python_version.is_some() {
+            // The environment of `uv` has no pip, the package is installed
+            // with `uv pip` into it.
+            install
+                .arg("pip")
+                .arg("install")
+                .arg("--python")
+                .arg(venv.join("bin").join("python"));
+        } else {
+            install = Command::new(venv.join("bin").join("pip"));
+            install
+                .arg("install")
+                .arg("--disable-pip-version-check")
+                .arg("--no-input");
+        }
+        let mut child = install
+            .arg(&requirement)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1755,6 +1860,11 @@ fn directory_size(path: &Path) -> TtsResult<u64> {
 /// The command that runs Python on this machine.
 fn python_command() -> String {
     std::env::var("LM_LATHE_PYTHON").unwrap_or_else(|_| "python3".to_string())
+}
+
+/// The command that builds a virtual environment with a named Python version.
+fn uv_command() -> String {
+    std::env::var("LM_LATHE_UV").unwrap_or_else(|_| "uv".to_string())
 }
 
 /// Reads a pipe of the child process and appends the lines to the log.

@@ -535,14 +535,16 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             ],
             hardware: HardwareRequirement {
                 platforms: vec!["linux".to_string(), "macos".to_string()],
-                require_cuda: false,
+                require_cuda: true,
                 require_apple_silicon: false,
                 require_mlx: false,
                 min_total_ram_bytes: 16 * GB,
                 min_cuda_compute: None,
                 notes: Some(
                     "VoiceDesign requires `task_type=VoiceDesign` and a non-empty `instructions` \
-                     field. The macOS path is not verified by the upstream project."
+                     field. The runtime of this model needs CUDA: on Apple Silicon the MPS path \
+                     of SGLang-Omni crashes while the speech tokenizer is loaded, so the MLX \
+                     checkpoint `qwen3-tts-1.7b-voicedesign-mlx` is the one to use."
                         .to_string(),
                 ),
             },
@@ -574,9 +576,14 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             ],
             hardware: HardwareRequirement {
                 platforms: vec!["linux".to_string(), "macos".to_string()],
+                require_cuda: true,
                 min_total_ram_bytes: 16 * GB,
                 notes: Some(
-                    "Built-in speakers: Vivian, Ryan, Dylan, Eric, and others.".to_string(),
+                    "Built-in speakers: Vivian, Ryan, Dylan, Eric, and others. The runtime of \
+                     this model needs CUDA: on Apple Silicon the MPS path of SGLang-Omni \
+                     crashes, so the MLX checkpoint `qwen3-tts-1.7b-customvoice-mlx` is the one \
+                     to use."
+                        .to_string(),
                 ),
                 ..Default::default()
             },
@@ -607,8 +614,14 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             ],
             hardware: HardwareRequirement {
                 platforms: vec!["linux".to_string(), "macos".to_string()],
+                require_cuda: true,
                 min_total_ram_bytes: 16 * GB,
-                notes: Some("Voice cloning requires a reference clip.".to_string()),
+                notes: Some(
+                    "Voice cloning requires a reference clip. The runtime of this model needs \
+                     CUDA: on Apple Silicon the MPS path of SGLang-Omni crashes, so the MLX \
+                     checkpoint `qwen3-tts-1.7b-base-mlx` is the one to use."
+                        .to_string(),
+                ),
                 ..Default::default()
             },
             mode: EngineMode::SglangOmni,
@@ -638,8 +651,14 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             ],
             hardware: HardwareRequirement {
                 platforms: vec!["linux".to_string(), "macos".to_string()],
+                require_cuda: true,
                 min_total_ram_bytes: 8 * GB,
-                notes: Some("Voice cloning requires a reference clip.".to_string()),
+                notes: Some(
+                    "Voice cloning requires a reference clip. The runtime of this model needs \
+                     CUDA: on Apple Silicon the MPS path of SGLang-Omni crashes while the \
+                     speech tokenizer is loaded."
+                        .to_string(),
+                ),
                 ..Default::default()
             },
             mode: EngineMode::SglangOmni,
@@ -669,6 +688,7 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             ],
             hardware: HardwareRequirement {
                 platforms: vec!["macos".to_string()],
+                require_apple_silicon: true,
                 min_total_ram_bytes: 16 * GB,
                 notes: Some(
                     "Native MLX runtime on Apple Silicon. The Torch path of \
@@ -681,6 +701,125 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             mode: EngineMode::MlxNative,
             default_ttl_secs: None,
             aliases: vec![],
+            launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
+            local_path: None,
+            notes: None,
+        },
+        TTSModelSpec {
+            id: "qwen3-tts-1.7b-voicedesign-mlx".to_string(),
+            name: "Qwen3-TTS 1.7B VoiceDesign (MLX)".to_string(),
+            family: ModelFamily::Qwen3Tts,
+            engine_id: "mlx-audio".to_string(),
+            hf_repo: "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit".to_string(),
+            version: "1.7B".to_string(),
+            format: "safetensors (mlx 4bit)".to_string(),
+            size_bytes: 2_312_058_795,
+            estimated_memory_bytes: 6 * GB,
+            parameters: Some(1916676352),
+            features: vec![
+                TtsFeature::TextToSpeech,
+                TtsFeature::VoiceDesign,
+                TtsFeature::InstructionControl,
+                TtsFeature::Streaming,
+            ],
+            hardware: HardwareRequirement {
+                platforms: vec!["macos".to_string()],
+                require_apple_silicon: true,
+                min_total_ram_bytes: 16 * GB,
+                notes: Some(
+                    "Apple Silicon 上的 mlx-audio 路径。声音设计需要一段自然语言描述；\
+                     同一个运行时还负责 1.7B 的克隆。"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+            mode: EngineMode::MlxAudio,
+            default_ttl_secs: None,
+            aliases: vec![
+                "qwen3-tts-voicedesign-mlx".to_string(),
+                "qwen3-tts-1.7b-voicedesign-4bit".to_string(),
+            ],
+            launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
+            local_path: None,
+            notes: None,
+        },
+        TTSModelSpec {
+            id: "qwen3-tts-1.7b-customvoice-mlx".to_string(),
+            name: "Qwen3-TTS 1.7B CustomVoice (MLX)".to_string(),
+            family: ModelFamily::Qwen3Tts,
+            engine_id: "mlx-audio".to_string(),
+            hf_repo: "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit".to_string(),
+            version: "1.7B".to_string(),
+            format: "safetensors (mlx 4bit)".to_string(),
+            size_bytes: 2_312_059_416,
+            estimated_memory_bytes: 6 * GB,
+            parameters: Some(1916676352),
+            features: vec![
+                TtsFeature::TextToSpeech,
+                TtsFeature::CustomVoice,
+                TtsFeature::InstructionControl,
+                TtsFeature::Streaming,
+            ],
+            hardware: HardwareRequirement {
+                platforms: vec!["macos".to_string()],
+                require_apple_silicon: true,
+                min_total_ram_bytes: 16 * GB,
+                notes: Some(
+                    "Built-in speakers: Serena, Vivian, Uncle Fu, Ryan, Aiden, Ono Anna, \
+                     Sohee, Eric, Dylan."
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+            mode: EngineMode::MlxAudio,
+            default_ttl_secs: None,
+            aliases: vec![
+                "qwen3-tts-customvoice-mlx".to_string(),
+                "qwen3-tts-1.7b-customvoice-4bit".to_string(),
+            ],
+            launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
+            local_path: None,
+            notes: None,
+        },
+        TTSModelSpec {
+            id: "qwen3-tts-1.7b-base-mlx".to_string(),
+            name: "Qwen3-TTS 1.7B Base (MLX)".to_string(),
+            family: ModelFamily::Qwen3Tts,
+            engine_id: "mlx-audio".to_string(),
+            hf_repo: "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit".to_string(),
+            version: "1.7B".to_string(),
+            format: "safetensors (mlx 4bit)".to_string(),
+            size_bytes: 2_336_076_686,
+            estimated_memory_bytes: 6 * GB,
+            parameters: Some(1928677440),
+            features: vec![
+                TtsFeature::TextToSpeech,
+                TtsFeature::VoiceCloning,
+                TtsFeature::Streaming,
+            ],
+            hardware: HardwareRequirement {
+                platforms: vec!["macos".to_string()],
+                require_apple_silicon: true,
+                min_total_ram_bytes: 16 * GB,
+                notes: Some(
+                    "The base checkpoint has no built-in speaker: it clones the voice of a \
+                     reference clip."
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+            mode: EngineMode::MlxAudio,
+            default_ttl_secs: None,
+            aliases: vec![
+                "qwen3-tts-base-mlx".to_string(),
+                "qwen3-tts-1.7b-base-4bit".to_string(),
+            ],
             launch_args: vec![],
             llm_features: vec![],
             files: vec![],

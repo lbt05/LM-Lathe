@@ -484,16 +484,17 @@ impl HubModel {
     }
 
     /// The engine that serves the model.
+    ///
+    /// The MLX checkpoints are served by mlx-audio: the native MLX runtime
+    /// only reads the 0.6B custom voice checkpoint, while mlx-audio speaks
+    /// the 1.7B checkpoints as well and adds the cloning of the base
+    /// checkpoints.
     pub fn engine_id(&self) -> &'static str {
         match self.family() {
             Some(ModelFamily::Llm) => "llama.cpp",
-            _ => {
-                if self.format() == "mlx" {
-                    "sglang-omni-mlx"
-                } else {
-                    "sglang-omni"
-                }
-            }
+            Some(ModelFamily::FishDrama3) if self.format() == "mlx" => "fishaudio-drama3-mlx",
+            Some(ModelFamily::Qwen3Tts) if self.format() == "mlx" => "mlx-audio",
+            _ => "sglang-omni",
         }
     }
 
@@ -701,6 +702,13 @@ impl HubModel {
             },
             mode: match family {
                 ModelFamily::Llm => EngineMode::LlamaCpp,
+                ModelFamily::Qwen3Tts => {
+                    if self.format() == "mlx" {
+                        EngineMode::MlxAudio
+                    } else {
+                        EngineMode::SglangOmni
+                    }
+                }
                 _ => {
                     if self.format() == "mlx" {
                         EngineMode::MlxNative
@@ -863,7 +871,37 @@ mod tests {
             parameters: None,
         };
         assert!(model.is_runnable());
-        assert_eq!(model.engine_id(), "sglang-omni-mlx");
+        // The native runtime serves the drama checkpoints with its own
+        // server, the Qwen3-TTS one would not understand the checkpoint.
+        assert_eq!(model.engine_id(), "fishaudio-drama3-mlx");
+    }
+
+    /// The MLX conversion of Qwen3-TTS is served by mlx-audio: the native
+    /// runtime only reads the 0.6B custom voice checkpoint.
+    #[test]
+    fn an_mlx_qwen3_tts_checkpoint_is_served_by_mlx_audio() {
+        for id in [
+            "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit",
+            "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit",
+            "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit",
+            "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",
+        ] {
+            let model = HubModel {
+                id: id.to_string(),
+                pipeline_tag: Some("text-to-speech".to_string()),
+                library_name: None,
+                downloads: 100,
+                likes: 1,
+                last_modified: None,
+                created_at: None,
+                tags: vec!["mlx".to_string(), "text-to-speech".to_string()],
+                siblings: Vec::new(),
+                size_bytes: None,
+                parameters: None,
+            };
+            assert!(model.is_runnable(), "{id} was dropped");
+            assert_eq!(model.engine_id(), "mlx-audio", "{id} has the wrong engine");
+        }
     }
 
     /// A multimodal model is marked as `image-text-to-text` by the hub, and

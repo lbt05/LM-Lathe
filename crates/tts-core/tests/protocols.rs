@@ -26,6 +26,7 @@ fn voice_design_repo() -> RequestContext {
     RequestContext {
         mode: EngineMode::SglangOmni,
         model_repo: "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign".to_string(),
+        model_path: None,
     }
 }
 
@@ -73,6 +74,7 @@ fn custom_voice_omits_the_task_type_and_uses_the_speaker() {
     let ctx = RequestContext {
         mode: EngineMode::SglangOmni,
         model_repo: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice".to_string(),
+        model_path: None,
     };
     let payload = protocol.build_payload(&request, &ctx).unwrap();
     assert!(payload.get("task_type").is_none());
@@ -107,6 +109,7 @@ fn the_task_type_is_derived_from_the_checkpoint() {
     let custom = RequestContext {
         mode: EngineMode::SglangOmni,
         model_repo: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice".to_string(),
+        model_path: None,
     };
     let payload = protocol.build_payload(&request, &custom).unwrap();
     assert!(payload.get("task_type").is_none());
@@ -175,6 +178,7 @@ fn drama_3_sends_the_references() {
     let ctx = RequestContext {
         mode: EngineMode::SglangOmni,
         model_repo: "fishaudio/drama-3".to_string(),
+        model_path: None,
     };
     let payload = protocol.build_payload(&request, &ctx).unwrap();
     assert_eq!(payload["input"], "<|speaker:0|> 你好 <|speaker:1|> 再见");
@@ -206,7 +210,111 @@ fn the_native_mlx_runtime_refuses_remote_references() {
     let ctx = RequestContext {
         mode: EngineMode::MlxNative,
         model_repo: "mlx-community/fish-audio-drama-3-4bit".to_string(),
+        model_path: None,
     };
     let error = protocol.build_payload(&request, &ctx).unwrap_err();
     assert!(error.to_string().contains("local reference clips"));
+}
+
+/// The context of a checkpoint that mlx-audio serves.
+fn mlx_audio_ctx(repo: &str) -> RequestContext {
+    RequestContext {
+        mode: EngineMode::MlxAudio,
+        model_repo: repo.to_string(),
+        model_path: Some("/models/tts/mlx-community--Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit".to_string()),
+    }
+}
+
+#[test]
+fn the_mlx_audio_payload_names_the_checkpoint_of_the_disk() {
+    let protocol = Qwen3TTSProtocol;
+    let request = qwen_request(EngineSpecificParameters::Qwen3Tts(Qwen3TtsParameters {
+        task_type: Some(Qwen3TtsTaskType::VoiceDesign),
+        instructions: Some("一位三十岁左右的女性".to_string()),
+        ..Default::default()
+    }));
+    let ctx = mlx_audio_ctx("mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit");
+    let payload = protocol.build_payload(&request, &ctx).unwrap();
+    // The server loads the checkpoint of the request, so the path on the
+    // disk is the name of the model.
+    assert_eq!(
+        payload["model"],
+        "/models/tts/mlx-community--Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit"
+    );
+    // mlx-audio calls the description `instruct` and knows the kind of the
+    // checkpoint itself.
+    assert_eq!(payload["instruct"], "一位三十岁左右的女性");
+    assert!(payload.get("task_type").is_none());
+    assert!(payload.get("instructions").is_none());
+    assert_eq!(payload["response_format"], "wav");
+    // The language is named in English.
+    assert_eq!(payload["lang_code"], "chinese");
+}
+
+#[test]
+fn the_mlx_audio_payload_of_a_custom_voice_checkpoint_names_the_speaker() {
+    let protocol = Qwen3TTSProtocol;
+    let request = qwen_request(EngineSpecificParameters::Qwen3Tts(Qwen3TtsParameters {
+        speaker: Some("Vivian".to_string()),
+        ..Default::default()
+    }));
+    let ctx = mlx_audio_ctx("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit");
+    let payload = protocol.build_payload(&request, &ctx).unwrap();
+    assert_eq!(payload["voice"], "Vivian");
+}
+
+#[test]
+fn a_custom_voice_checkpoint_without_a_speaker_is_refused() {
+    let protocol = Qwen3TTSProtocol;
+    let request = qwen_request(EngineSpecificParameters::Qwen3Tts(Qwen3TtsParameters {
+        ..Default::default()
+    }));
+    let ctx = mlx_audio_ctx("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit");
+    let error = protocol.build_payload(&request, &ctx).unwrap_err();
+    assert!(error.to_string().contains("speaker"));
+}
+
+#[test]
+fn the_mlx_audio_payload_of_a_base_checkpoint_carries_the_reference() {
+    let protocol = Qwen3TTSProtocol;
+    let request = qwen_request(EngineSpecificParameters::Qwen3Tts(Qwen3TtsParameters {
+        references: vec![AudioReference {
+            audio_path: Some("/tmp/reference.wav".to_string()),
+            text: Some("参考音频的文本".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }));
+    let ctx = mlx_audio_ctx("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit");
+    let payload = protocol.build_payload(&request, &ctx).unwrap();
+    assert_eq!(payload["ref_audio"], "/tmp/reference.wav");
+    assert_eq!(payload["ref_text"], "参考音频的文本");
+    // The base checkpoint has no built-in speaker.
+    assert!(payload.get("voice").is_none());
+}
+
+#[test]
+fn a_base_checkpoint_without_a_reference_is_refused() {
+    let protocol = Qwen3TTSProtocol;
+    let request = qwen_request(EngineSpecificParameters::Qwen3Tts(Qwen3TtsParameters {
+        ..Default::default()
+    }));
+    let ctx = mlx_audio_ctx("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit");
+    let error = protocol.build_payload(&request, &ctx).unwrap_err();
+    assert!(error.to_string().contains("reference"));
+}
+
+#[test]
+fn a_remote_reference_is_refused_by_the_mlx_audio_engine() {
+    let protocol = Qwen3TTSProtocol;
+    let request = qwen_request(EngineSpecificParameters::Qwen3Tts(Qwen3TtsParameters {
+        references: vec![AudioReference {
+            audio_path: Some("https://example.com/a.wav".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }));
+    let ctx = mlx_audio_ctx("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit");
+    let error = protocol.build_payload(&request, &ctx).unwrap_err();
+    assert!(error.to_string().contains("local reference clip"));
 }

@@ -29,6 +29,8 @@ pub struct EngineSettings {
     pub sglang_binary: String,
     /// Binary used for the native Apple Silicon path.
     pub mlx_binary: String,
+    /// Binary used for the mlx-audio path.
+    pub mlx_audio_binary: String,
     /// Directory the engine logs are written to.
     pub logs_dir: PathBuf,
     /// Timeout of a single inference request.
@@ -48,6 +50,7 @@ impl Default for EngineSettings {
         Self {
             sglang_binary: "sgl-omni".to_string(),
             mlx_binary: "fishaudio_drama3_server".to_string(),
+            mlx_audio_binary: "mlx_audio.server".to_string(),
             logs_dir: PathBuf::from("logs/tts"),
             request_timeout: Duration::from_secs(600),
             health_interval: Duration::from_millis(750),
@@ -68,6 +71,7 @@ impl std::fmt::Debug for EngineSettings {
         f.debug_struct("EngineSettings")
             .field("sglang_binary", &self.sglang_binary)
             .field("mlx_binary", &self.mlx_binary)
+            .field("mlx_audio_binary", &self.mlx_audio_binary)
             .field("logs_dir", &self.logs_dir)
             .field("request_timeout", &self.request_timeout)
             .field("health_interval", &self.health_interval)
@@ -196,6 +200,22 @@ impl SGLangOmniAdapter {
                     .or_else(|| self.settings.resolve_binary("fishaudio-drama3-mlx"))
                     .map(|path| path.to_string_lossy().to_string())
                     .unwrap_or_else(|| self.settings.mlx_binary.clone());
+                (binary, args)
+            }
+            EngineMode::MlxAudio => {
+                // mlx-audio serves an OpenAI compatible API and loads the
+                // checkpoint that the request names, so the server only gets
+                // the address it listens on.
+                args.push("--host".to_string());
+                args.push("127.0.0.1".to_string());
+                args.push("--port".to_string());
+                args.push(port.to_string());
+                args.extend(config.extra_args.iter().cloned());
+                let binary = self
+                    .settings
+                    .resolve_binary("mlx-audio")
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|| self.settings.mlx_audio_binary.clone());
                 (binary, args)
             }
             EngineMode::LlamaCpp => {
@@ -413,6 +433,7 @@ impl EngineAdapter for SGLangOmniAdapter {
                 .model_name
                 .clone()
                 .or_else(|| Some(config.model_path.clone())),
+            model_path: Some(config.model_path.clone()),
             engine_id: config.engine_id.clone(),
             process_id: pid,
             endpoint: Some(endpoint),
@@ -572,6 +593,7 @@ impl TTSAdapter for SGLangOmniAdapter {
                 .model_repo
                 .clone()
                 .unwrap_or_else(|| handle.model_id.clone()),
+            model_path: handle.model_path.clone(),
         };
         let payload = protocol.build_payload(&request, &ctx)?;
         let raw = EngineAdapter::synthesize_raw(self, &handle, &payload).await?;

@@ -1599,13 +1599,27 @@ async fn render_preview(
         speed: None,
     };
     if let EngineSpecificParameters::Qwen3Tts(params) = &mut request.parameters {
-        params.task_type = Some(tts_core::types::Qwen3TtsTaskType::VoiceDesign);
-        if params.instructions.is_none() {
-            params.instructions = voice
-                .engine_config
-                .get("voice_design_prompt")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
+        // The task type follows the profile: a designed voice needs the
+        // description, a cloned one needs the reference clips and a custom
+        // voice needs the speaker. Only the designed voice knows its task
+        // type, the others let the checkpoint decide.
+        let design = voice
+            .engine_config
+            .get("voice_design_prompt")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        match design {
+            Some(prompt) => {
+                params.task_type = Some(tts_core::types::Qwen3TtsTaskType::VoiceDesign);
+                if params.instructions.is_none() {
+                    params.instructions = Some(prompt);
+                }
+            }
+            None => {
+                params.task_type = None;
+            }
         }
     }
     let result = state.service.manager.synthesize(request).await?;

@@ -236,6 +236,7 @@ impl TTSAdapter for FishDrama3Adapter {
                 .model_repo
                 .clone()
                 .unwrap_or_else(|| handle.model_id.clone()),
+            model_path: handle.model_path.clone(),
         };
         let payload = self.protocol.build_payload(&request, &ctx)?;
         let raw = EngineAdapter::synthesize_raw(self.engine.as_ref(), &handle, &payload).await?;

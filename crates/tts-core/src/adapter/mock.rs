@@ -81,6 +81,7 @@ impl TTSAdapter for MockAdapter {
         let handle = RuntimeHandle {
             model_id: "mock".to_string(),
             model_repo: Some("mock://echo".to_string()),
+            model_path: None,
             engine_id: "mock".to_string(),
             process_id: None,
             endpoint: Some("mock://local".to_string()),

@@ -198,10 +198,35 @@ async fn the_runtime_reports_its_state() {
 async fn a_model_that_is_not_installed_is_refused_immediately() {
     let dir = TempDir::new("runtime");
     let service = service(&dir);
+    // A checkpoint of a family the manager knows, but that was never
+    // downloaded. The hardware does not matter here, so the model asks for
+    // nothing.
+    service.registry.insert(TTSModelSpec {
+        id: "not-installed".to_string(),
+        name: "Not Installed".to_string(),
+        family: ModelFamily::Qwen3Tts,
+        engine_id: "sglang-omni".to_string(),
+        hf_repo: "example/not-installed".to_string(),
+        version: "1".to_string(),
+        format: "safetensors".to_string(),
+        size_bytes: 1024,
+        estimated_memory_bytes: 1024,
+        parameters: None,
+        features: vec![TtsFeature::TextToSpeech],
+        llm_features: vec![],
+        files: vec![],
+        hardware: Default::default(),
+        mode: EngineMode::SglangOmni,
+        default_ttl_secs: None,
+        aliases: vec![],
+        launch_args: vec![],
+        local_path: None,
+        notes: None,
+    });
     // The checkpoint was never downloaded, so the engine must not be started.
     let error = service
         .manager
-        .load_model("qwen3-tts-1.7b-voicedesign")
+        .load_model("not-installed")
         .await
         .unwrap_err();
     assert!(error.to_string().contains("not installed"));
