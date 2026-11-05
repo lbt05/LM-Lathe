@@ -453,7 +453,7 @@ async fn the_hub_is_searched_for_models() {
     assert_eq!(status, StatusCode::OK);
     let json: serde_json::Value =
         serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
-    let models = json.as_array().unwrap();
+    let models = json["models"].as_array().unwrap();
 
     // The hub answers with the repositories of the query; every one of them
     // has to be a model the runtime can serve.

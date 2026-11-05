@@ -345,12 +345,13 @@ async fn discover_models(
     State(state): State<ApiState>,
     Query(params): Query<DiscoverParams>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let models = state
+    let search = state
         .hub
         .search(&params.q, params.limit.unwrap_or(20))
         .await?;
     let known: Vec<TTSModelSpec> = state.service.registry.list();
-    let payload: Vec<DiscoveredModelDto> = models
+    let payload: Vec<DiscoveredModelDto> = search
+        .models
         .iter()
         .map(|model| {
             // A repository that the application already knows keeps the id
@@ -380,7 +381,10 @@ async fn discover_models(
             }
         })
         .collect();
-    Ok(axum::Json(payload))
+    Ok(axum::Json(DiscoveredModelsDto {
+        models: payload,
+        dropped: search.dropped,
+    }))
 }
 
 /// `POST /v1/tts/models/install`

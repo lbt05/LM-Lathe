@@ -167,6 +167,7 @@ export default function Models({
   // are not part of the application come from.
   const [hubQuery, setHubQuery] = useState("");
   const [hubResults, setHubResults] = useState<DiscoveredModel[]>([]);
+  const [hubDropped, setHubDropped] = useState(0);
   const [hubLoading, setHubLoading] = useState(false);
   const [hubSearched, setHubSearched] = useState(false);
 
@@ -234,12 +235,17 @@ export default function Models({
     }
     setHubLoading(true);
     try {
-      const results = await api.discover(query, 20);
-      setHubResults(results);
+      const answer = await api.discover(query, 20);
+      setHubResults(answer.models);
+      setHubDropped(answer.dropped);
       setHubSearched(true);
-      store.log("info", `在 Hugging Face 上搜索 ${query}，找到 ${results.length} 个模型`);
+      store.log(
+        "info",
+        `在 Hugging Face 上搜索 ${query}，找到 ${answer.models.length} 个模型`,
+      );
     } catch (err) {
       setHubResults([]);
+      setHubDropped(0);
       setHubSearched(true);
       const message = err instanceof Error ? err.message : String(err);
       store.log("bad", `搜索失败：${message}`);
@@ -433,7 +439,7 @@ export default function Models({
                 hubLoading
                   ? "搜索中…"
                   : hubSearched
-                    ? `${hubResults.length} 个结果`
+                    ? `${hubResults.length} 个结果${hubDropped ? ` · ${hubDropped} 个不支持` : ""}`
                     : "搜索仓库里的模型"
               }
             />
@@ -485,7 +491,7 @@ export default function Models({
                             </span>
                             <span className="sub">
                               {model.quant
-                                ? `${model.quant} · ${model.files.length} 个权重文件`
+                                ? `${model.quant} · 只下载这一个量化`
                                 : "safetensors 权重"}
                             </span>
                           </span>
@@ -527,7 +533,11 @@ export default function Models({
             ) : hubSearched ? (
               <Empty
                 title="没有找到能跑的模型"
-                text="只有当前运行时能加载的模型才会出现在这里：GGUF 的语言模型和 Qwen3-TTS 的语音模型。"
+                text={
+                  hubDropped
+                    ? `Hugging Face 上有 ${hubDropped} 个同名仓库，但当前运行时不支持它们：语言模型需要 GGUF 权重，语音模型需要 Qwen3-TTS 权重。`
+                    : "Hugging Face 上没有同名仓库。当前运行时支持 GGUF 语言模型和 Qwen3-TTS 语音模型。"
+                }
               />
             ) : (
               <Empty

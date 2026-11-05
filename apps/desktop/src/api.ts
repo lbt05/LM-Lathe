@@ -122,6 +122,14 @@ export interface DiscoveredModel {
   installed: boolean;
 }
 
+/** The answer of a search of the hub. */
+export interface DiscoveredModels {
+  models: DiscoveredModel[];
+  /** The repositories that were found but dropped, because the runtime of
+   *  the application cannot serve them. */
+  dropped: number;
+}
+
 export interface InstallProgress {
   model_id: string;
   state: string;
@@ -285,7 +293,7 @@ export const api = {
 
   /** Searches the Hugging Face Hub for models the runtime can serve. */
   discover: (query: string, limit = 20) =>
-    request<DiscoveredModel[]>(
+    request<DiscoveredModels>(
       `/v1/tts/discover?q=${encodeURIComponent(query)}&limit=${limit}`,
     ),
   /** Downloads a model that was found by the search. */

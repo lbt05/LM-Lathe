@@ -13,6 +13,16 @@ use crate::installer::{RepoFile, HUB_ENDPOINT};
 use crate::registry::TTSModelSpec;
 use crate::types::{EngineMode, LlmFeature, ModelFamily, TtsFeature};
 
+/// The answer of a search of the hub.
+#[derive(Debug, Clone, Default)]
+pub struct HubSearch {
+    /// The models the runtime of the application can serve.
+    pub models: Vec<HubModel>,
+    /// The repositories that were found but dropped, because the runtime
+    /// cannot serve them.
+    pub dropped: usize,
+}
+
 /// A repository of the hub.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HubModel {
@@ -100,17 +110,33 @@ impl HubClient {
     /// once for the speech models. Only the repositories that the runtime
     /// can serve are kept, because downloading the rest would put a file on
     /// the disk that nothing can run.
-    pub async fn search(&self, query: &str, limit: usize) -> TtsResult<Vec<HubModel>> {
+    /// Searches the hub for the models of a query.
+    ///
+    /// The answer holds the models the runtime can serve and the number of
+    /// repositories that were dropped, so the interface can tell why a
+    /// query came back empty.
+    pub async fn search(&self, query: &str, limit: usize) -> TtsResult<HubSearch> {
         let query = query.trim();
         if query.is_empty() {
-            return Ok(Vec::new());
+            return Ok(HubSearch::default());
         }
         let limit = limit.clamp(1, 50);
-        let mut models = self.query(query, limit, Some("gguf")).await?;
-        models.extend(self.query(query, limit, Some("text-to-speech")).await?);
-        models.sort_by_key(|model| std::cmp::Reverse(model.downloads));
+        // The hub answers with the most downloaded repositories first, and
+        // those are often the ones the runtime cannot serve. The search
+        // therefore asks for more than it shows.
+        let fetch = (limit * 3).clamp(10, 150);
+        let mut all = self.query(query, fetch, Some("gguf")).await?;
+        all.extend(self.query(query, fetch, Some("text-to-speech")).await?);
+        all.extend(self.query(query, fetch, Some("text-generation")).await?);
+        all.sort_by_key(|model| std::cmp::Reverse(model.downloads));
+        all.dedup_by(|left, right| left.id == right.id);
+        let dropped = all.len();
+        let mut models: Vec<HubModel> = all.into_iter().filter(HubModel::is_runnable).collect();
         models.truncate(limit);
-        Ok(models)
+        Ok(HubSearch {
+            models,
+            dropped,
+        })
     }
 
     /// Asks the hub for the repositories of a search.
@@ -145,10 +171,7 @@ impl HubClient {
             .json()
             .await
             .map_err(|err| TtsError::Serialization(err.to_string()))?;
-        Ok(models
-            .into_iter()
-            .filter(|model| model.is_runnable())
-            .collect())
+        Ok(models)
     }
 
     /// Looks a single repository up.
@@ -203,19 +226,37 @@ impl HubClient {
 
 impl HubModel {
     /// The family of the model, derived from the task it was trained for.
+    ///
+    /// The hub is not consistent: a multimodal model is marked as
+    /// `image-text-to-text` and a community model often carries no task at
+    /// all. A repository that holds a GGUF file is a language model then,
+    /// because the language runtime reads nothing else.
     pub fn family(&self) -> Option<ModelFamily> {
         match self.pipeline_tag.as_deref() {
             Some("text-to-speech") | Some("text-to-speech-v2") => {
                 Some(ModelFamily::Qwen3Tts)
             }
-            Some("text-generation") => Some(ModelFamily::Llm),
-            _ => None,
+            Some("text-generation") | Some("image-text-to-text") | Some("text-to-text") => {
+                Some(ModelFamily::Llm)
+            }
+            _ => {
+                if !self.gguf_files().is_empty() {
+                    Some(ModelFamily::Llm)
+                } else if self.is_qwen3_tts() {
+                    Some(ModelFamily::Qwen3Tts)
+                } else {
+                    None
+                }
+            }
         }
     }
 
     /// The checkpoint format of the repository.
+    ///
+    /// The files of the repository are the truth; the tags are only a hint,
+    /// because a repository can carry a GGUF file without the tag.
     pub fn format(&self) -> &'static str {
-        if self.tags.iter().any(|tag| tag == "gguf") {
+        if !self.gguf_files().is_empty() {
             "gguf"
         } else if self.tags.iter().any(|tag| tag.contains("mlx")) {
             "mlx"
@@ -241,6 +282,12 @@ impl HubModel {
             .collect()
     }
 
+    /// `true` when the repository holds a Qwen3-TTS checkpoint.
+    pub fn is_qwen3_tts(&self) -> bool {
+        self.tags.iter().any(|tag| tag == "qwen3_tts")
+            || self.id.to_lowercase().contains("qwen3-tts")
+    }
+
     /// `true` when the runtime of the application can serve the model.
     ///
     /// The language runtime serves every GGUF checkpoint. The speech
@@ -249,12 +296,8 @@ impl HubModel {
     /// the runtime reads.
     pub fn is_runnable(&self) -> bool {
         match self.family() {
-            Some(ModelFamily::Llm) => self.format() == "gguf" && !self.gguf_files().is_empty(),
-            Some(ModelFamily::Qwen3Tts) => {
-                (self.tags.iter().any(|tag| tag == "qwen3_tts")
-                    || self.id.to_lowercase().contains("qwen3-tts"))
-                    && self.format() != "gguf"
-            }
+            Some(ModelFamily::Llm) => !self.gguf_files().is_empty(),
+            Some(ModelFamily::Qwen3Tts) => self.is_qwen3_tts() && self.format() != "gguf",
             _ => false,
         }
     }
@@ -496,5 +539,51 @@ mod tests {
         };
         assert!(!model.is_runnable());
         assert_eq!(model.family().map(|family| family.as_str()), Some("qwen3-tts"));
+    }
+
+    /// A multimodal model is marked as `image-text-to-text` by the hub, and
+    /// a community model often carries no task at all. Both are language
+    /// models when they hold a GGUF file.
+    #[test]
+    fn a_multimodal_gguf_repository_is_a_language_model() {
+        for pipeline_tag in ["image-text-to-text", "text-generation"] {
+            let model = HubModel {
+                id: "unsloth/Qwen3.5-9B-GGUF".to_string(),
+                pipeline_tag: Some(pipeline_tag.to_string()),
+                library_name: None,
+                downloads: 100,
+                likes: 1,
+                last_modified: None,
+                created_at: None,
+                tags: vec!["gguf".to_string()],
+                siblings: vec![crate::hub::HubSibling {
+                    rfilename: "Qwen3.5-9B-Q4_K_M.gguf".to_string(),
+                }],
+            };
+            assert!(model.is_runnable(), "{pipeline_tag} was dropped");
+            assert_eq!(model.format(), "gguf");
+            assert_eq!(model.engine_id(), "llama.cpp");
+        }
+    }
+
+    /// A community model without a task is a language model when it holds a
+    /// GGUF file, and it is dropped when it does not.
+    #[test]
+    fn a_repository_without_a_task_is_read_from_its_files() {
+        let model = HubModel {
+            id: "HauhauCS/Qwen3.5-9B-Uncensored".to_string(),
+            pipeline_tag: None,
+            library_name: None,
+            downloads: 100,
+            likes: 1,
+            last_modified: None,
+            created_at: None,
+            tags: vec!["gguf".to_string()],
+            siblings: vec![crate::hub::HubSibling {
+                rfilename: "Qwen3.5-9B-Q4_K_M.gguf".to_string(),
+            }],
+        };
+        assert!(model.is_runnable());
+        assert_eq!(model.family().map(|family| family.as_str()), Some("llm"));
     }
 }

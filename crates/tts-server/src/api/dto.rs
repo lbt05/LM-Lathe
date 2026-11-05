@@ -306,6 +306,16 @@ pub struct DiscoveredModelDto {
     pub installed: bool,
 }
 
+/// The answer of a search of the hub.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiscoveredModelsDto {
+    /// The models the runtime of the application can serve.
+    pub models: Vec<DiscoveredModelDto>,
+    /// The repositories that were found but dropped, because the runtime
+    /// cannot serve them.
+    pub dropped: usize,
+}
+
 /// A voice profile.
 #[derive(Debug, Clone, Serialize)]
 pub struct VoiceDto {
