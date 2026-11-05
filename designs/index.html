@@ -1,0 +1,2003 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LM Lathe · 可交互原型 v2</title>
+<style>
+/* OD-LAYOUT-PRIMITIVES v1 — structure only: display, flex/grid, overflow, wrapping, ratio, geometry.
+   Put this @layer first; product CSS outside the layer wins ordinary layout rules.
+   Native hidden and closed-dialog states take precedence over component display rules. */
+@layer od-layout {
+  [hidden]:not([hidden="until-found" i]) { display: none !important; }
+  dialog:not([open]) { display: none !important; }
+
+  :where(.od-stack,.od-row,.od-row-top,.od-cluster,.od-grid,.od-field,.od-stat,.od-cell,.od-tile) > :where(*) { min-width: 0; }
+
+  /* containers */
+  .od-stack   { display: flex; flex-direction: column; gap: var(--od-gap, 8px); }
+  .od-row     { display: flex; align-items: center; gap: var(--od-gap, 8px); }
+  .od-row-top { display: flex; align-items: flex-start; gap: var(--od-gap, 8px); }
+  .od-cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--od-gap, 8px); }
+  .od-fill    { flex: 1 1 0; min-width: 0; }
+  .od-fixed   { flex: none; }
+  .od-grid    { display: grid; gap: var(--od-gap, 12px); grid-template-columns: repeat(var(--od-cols, 3), minmax(0, 1fr)); }
+
+  /* stacked information: each piece is its own line — never sibling inline spans */
+  .od-stat, .od-field, .od-cell { display: grid; gap: var(--od-gap, 2px); }
+  :where(.od-stat,.od-field,.od-cell) > :where(*) { display: block; }
+  .od-tile { display: grid; grid-template-rows: auto 1fr; }
+  :where(.od-tile) > :where(*) { display: block; }
+
+  /* media keeps its intrinsic ratio by default; never a distorted or cropped
+     cover by accident. height:auto lets the ratio win over an <img height="…">
+     attribute. Cropping to a uniform box is an explicit opt-in: set --od-ratio
+     AND add .od-media-cover together (per the core rule, only where a crop is
+     deliberate — tile thumbs, decorative fills — never on full-frame content). */
+  .od-media { display: block; width: 100%; height: auto; aspect-ratio: var(--od-ratio, auto); }
+  .od-media-cover { object-fit: cover; }
+
+  /* functional inline SVG icons opt into bounded geometry; content SVGs keep their own */
+  .od-icon { display: inline-block; inline-size: var(--od-icon-size, 1em); block-size: var(--od-icon-size, 1em); flex: none; }
+
+  /* data text only — authored copy is rewritten to its budget instead */
+  .od-truncate { display: block; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .od-clamp-2, .od-clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .od-clamp-2 { -webkit-line-clamp: 2; }
+  .od-clamp-3 { -webkit-line-clamp: 3; }
+  .od-lines-2 { min-height: calc(2 * 1.4em); }   /* block-level reservation for a shared baseline */
+  .od-nowrap  { white-space: nowrap; }           /* 数字+单位 · 价格+起 · 日期+星期 */
+  .od-keep    { word-break: keep-all; overflow-wrap: anywhere; } /* CJK labels break at spaces / <wbr> first */
+
+  /* screen skeleton (optional): bars take their own space, the middle scrolls — no padding guessed for chrome */
+  .od-screen { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; }
+  .od-scroll { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+
+  /* horizontal rail: the next chip peeks at the edge; trailing room survives overflow */
+  .od-rail { display: flex; gap: var(--od-gap, 8px); overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none;
+             padding-inline: var(--od-rail-pad, 16px); scroll-scroll-padding-inline: var(--od-rail-pad, 16px); }
+  .od-rail::-webkit-scrollbar { display: none; }
+  :where(.od-rail) > :where(*) { flex: none; scroll-snap-align: start; }
+  :where(.od-rail) > :where(:last-child) { margin-inline-end: var(--od-rail-pad, 16px); }
+
+  .od-spacer { flex: none; visibility: hidden; pointer-events: none; }
+  .od-touch  { min-width: 44px; min-height: 44px; }
+}
+
+/* ==========================================================================
+   LM Lathe — 设计系统 v2
+   纸面工作台：浅色纸底、发丝线、等宽数字、零渐变零辉光。
+   一切都靠排版与留白分层，不靠卡片阴影与彩色光晕。
+   ========================================================================== */
+
+:root{
+  --bg:#f1f0ec;
+  --surface:#ffffff;
+  --surface-2:#f7f6f2;
+  --surface-3:#eae8e1;
+  --line:#e4e2da;
+  --line-2:#d0cdc2;
+
+  --ink:#17171b;
+  --ink-2:#55545c;
+  --ink-3:#8a8891;
+  --ink-4:#adaab2;
+
+  --llm:#3f5bd9;
+  --tts:#c2571a;
+  --os:#a6a49a;
+  --ok:#2f6f4f;
+  --warn:#96620f;
+  --bad:#b3372c;
+  --info:#3f5bd9;
+
+  --on-ink:#ffffff;
+  --row-sel:#f2f1f6;
+  --scrim:rgba(30,30,34,.28);
+  --shadow:0 20px 60px rgba(20,20,26,.16);
+  --term-bg:#15161b;
+  --term-ink:#c9cdd6;
+
+  --r:3px;
+  --rail:212px;
+  --insp:332px;
+
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+}
+
+/* ---------- dark theme ---------- */
+html[data-theme="dark"]{
+  --bg:#131419;
+  --surface:#1a1c23;
+  --surface-2:#20232b;
+  --surface-3:#282c35;
+  --line:#2b2f39;
+  --line-2:#3a3f4b;
+
+  --ink:#e9ebf1;
+  --ink-2:#a7adbb;
+  --ink-3:#7c8393;
+  --ink-4:#5c626e;
+
+  --llm:#7e95ff;
+  --tts:#e79a52;
+  --os:#7d8390;
+  --ok:#4ec08d;
+  --warn:#e0a83c;
+  --bad:#f0685d;
+  --info:#7e95ff;
+
+  --on-ink:#131419;
+  --row-sel:#232734;
+  --scrim:rgba(0,0,0,.58);
+  --shadow:0 20px 60px rgba(0,0,0,.6);
+  --term-bg:#0e0f13;
+  --term-ink:#c6cad3;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--bg);color:var(--ink);
+  font-family:var(--sans);font-size:13px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--ink);text-decoration:underline;text-underline-offset:2px;text-decoration-color:var(--line-2)}
+:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
+::selection{background:color-mix(in srgb,var(--ink) 16%,transparent)}
+.od-fill{flex:1 1 0;min-width:0}
+
+/* ---------- shell ---------- */
+.app{
+  display:grid;
+  grid-template-columns:var(--rail) minmax(0,1fr) 0;
+  grid-template-rows:30px minmax(0,1fr);
+  grid-template-areas:"tb tb tb" "rail main insp";
+  height:100vh;overflow:hidden;
+}
+.app.has-insp{grid-template-columns:var(--rail) minmax(0,1fr) var(--insp)}
+
+.titlebar{
+  grid-area:tb;display:flex;align-items:center;gap:10px;padding:0 12px;
+  background:var(--surface);border-bottom:1px solid var(--line);
+}
+.lights{display:flex;gap:7px}
+.lights i{width:10px;height:10px;border-radius:50%;display:block}
+.lights i:nth-child(1){background:#ff5f57}
+.lights i:nth-child(2){background:#febc2e}
+.lights i:nth-child(3){background:#28c840}
+.titlebar__name{font-size:11.5px;font-weight:600;letter-spacing:.01em}
+.titlebar__ctx{margin-left:auto;font:10.5px var(--mono);color:var(--ink-4);letter-spacing:.03em}
+
+/* ---------- rail ---------- */
+.rail{
+  grid-area:rail;background:var(--surface);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;overflow:auto;padding:14px 0 0;
+}
+.rail__grp{padding:0 12px;margin-bottom:18px}
+.rail__label{display:block;padding:0 6px 7px}
+.rail__item{
+  display:flex;align-items:center;gap:9px;width:100%;height:28px;padding:0 8px;
+  border:0;background:none;border-radius:var(--r);cursor:pointer;position:relative;
+  font-size:12.5px;color:var(--ink-2);text-align:left;
+}
+.rail__item:hover{background:var(--surface-2)}
+.rail__item[aria-current="page"]{background:var(--surface-2);color:var(--ink);font-weight:600}
+.rail__item[aria-current="page"]::before{content:'';position:absolute;left:0;top:6px;bottom:6px;width:2px;background:var(--ink)}
+.rail__item .od-icon{--od-icon-size:15px;color:var(--ink-4)}
+.rail__item[aria-current="page"] .od-icon{color:var(--ink)}
+.rail__count{margin-left:auto;font:10.5px var(--mono);color:var(--ink-4);font-variant-numeric:tabular-nums}
+.rail__foot{margin-top:auto;padding:11px 16px 12px;border-top:1px solid var(--line)}
+.rail__status{display:flex;align-items:center;gap:7px;font:11px var(--mono);color:var(--ink-3)}
+.rail__dot{width:6px;height:6px;border-radius:1px;background:var(--ok);flex:none}
+.rail__dot[data-tone="bad"]{background:var(--bad)}
+.rail__dot[data-tone="warn"]{background:var(--warn)}
+
+/* ---------- main ---------- */
+.main{grid-area:main;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+.topbar{
+  display:flex;align-items:center;gap:10px;padding:0 22px;height:46px;flex:none;
+  background:var(--surface);border-bottom:1px solid var(--line);
+}
+.topbar__title{font-size:14px;font-weight:600;letter-spacing:-.01em}
+.topbar__sub{font:10px var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--ink-4)}
+.topbar__tools{display:flex;align-items:center;gap:8px}
+.scroll{flex:1;overflow:auto;padding:20px 22px 52px}
+.view{display:grid;gap:16px;max-width:1340px}
+
+/* ---------- sheets ---------- */
+.sheet{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.sheet__head{display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line)}
+.sheet__title{font-size:12.5px;font-weight:600;letter-spacing:-.005em}
+.sheet__meta{margin-left:auto;font:10.5px var(--mono);color:var(--ink-4);font-variant-numeric:tabular-nums}
+.sheet__body{padding:14px}
+.sheet__body--flush{padding:0}
+.sheet__tools{display:flex;align-items:center;gap:8px;margin-left:auto}
+
+/* ---------- type bits ---------- */
+.eyebrow{font:500 10px/1 var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--ink-3)}
+.cellstack{display:grid;gap:2px;min-width:0}
+.cellrow{display:flex;align-items:center;gap:9px;min-width:0}
+.tmark{
+  font:600 9.5px/1 var(--mono);letter-spacing:.07em;padding:4px 5px;border-radius:2px;
+  background:var(--surface-3);color:var(--ink-2);flex:none;
+}
+.tmark[data-type="LLM"]{background:color-mix(in srgb,var(--llm) 14%,transparent);color:var(--llm)}
+.tmark[data-type="TTS"]{background:color-mix(in srgb,var(--tts) 14%,transparent);color:var(--tts)}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.unit{font-size:11px;color:var(--ink-3);margin-left:3px;font-weight:400}
+
+/* ---------- controls ---------- */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  height:27px;padding:0 10px;border:1px solid var(--line-2);border-radius:var(--r);
+  background:var(--surface);color:var(--ink-2);font-size:12px;cursor:pointer;white-space:nowrap;
+  transition:background .12s ease,border-color .12s ease,color .12s ease;
+}
+.btn:hover{background:var(--surface-2);color:var(--ink)}
+.btn .od-icon{--od-icon-size:14px}
+.btn--primary{background:var(--ink);border-color:var(--ink);color:var(--on-ink)}
+.btn--primary:hover{background:var(--ink-2);border-color:var(--ink-2);color:var(--on-ink)}
+.btn--danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
+.btn--danger:hover{background:color-mix(in srgb,var(--bad) 10%,transparent)}
+.btn--ghost{border-color:transparent;background:none}
+.btn--ghost:hover{background:var(--surface-2)}
+.btn--icon{width:27px;padding:0}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+.btn[disabled]:hover{background:var(--surface);color:var(--ink-2)}
+
+.tag{
+  display:inline-flex;align-items:center;gap:5px;height:19px;padding:0 6px;border-radius:2px;
+  font:500 10.5px/1 var(--mono);letter-spacing:.02em;white-space:nowrap;
+  justify-self:start;align-self:center;
+}
+.tag__dot{width:5px;height:5px;border-radius:1px;background:currentColor;flex:none}
+.tag--ok{background:color-mix(in srgb,var(--ok) 13%,transparent);color:var(--ok)}
+.tag--warn{background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)}
+.tag--bad{background:color-mix(in srgb,var(--bad) 13%,transparent);color:var(--bad)}
+.tag--idle{background:var(--surface-3);color:var(--ink-3)}
+.tag--info{background:color-mix(in srgb,var(--info) 13%,transparent);color:var(--info)}
+.tag--llm{background:color-mix(in srgb,var(--llm) 13%,transparent);color:var(--llm)}
+.tag--tts{background:color-mix(in srgb,var(--tts) 13%,transparent);color:var(--tts)}
+
+.search{
+  display:inline-flex;align-items:center;gap:7px;height:27px;padding:0 9px;
+  border:1px solid var(--line-2);border-radius:var(--r);background:var(--surface);
+}
+.search .od-icon{--od-icon-size:14px;color:var(--ink-4)}
+.search input{border:0;outline:0;background:none;width:200px;font-size:12px}
+.search input::placeholder{color:var(--ink-4)}
+
+.sel{height:27px;border:1px solid var(--line-2);border-radius:var(--r);background:var(--surface);font:11.5px var(--mono);padding:0 4px;color:var(--ink-2)}
+
+.tabbar{
+  display:flex;gap:0;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r);overflow:hidden;margin-bottom:16px;
+}
+.tabbar button{
+  display:flex;align-items:center;gap:8px;height:38px;padding:0 15px;border:0;background:none;cursor:pointer;
+  font-size:12.5px;color:var(--ink-3);border-bottom:2px solid transparent;margin-bottom:-1px;
+  transition:color .12s ease,background .12s ease;
+}
+.tabbar button:hover{color:var(--ink);background:var(--surface-2)}
+.tabbar button[aria-selected="true"]{color:var(--ink);font-weight:600;border-bottom-color:var(--ink)}
+.tabbar__n{font:10.5px var(--mono);color:var(--ink-4);font-variant-numeric:tabular-nums}
+.tabbar button[aria-selected="true"] .tabbar__n{color:var(--ink-2)}
+.tabs{display:flex;gap:2px}
+.tabs button{
+  height:25px;padding:0 10px;border:1px solid transparent;border-radius:var(--r);
+  background:none;font-size:11.5px;color:var(--ink-3);cursor:pointer;
+}
+.tabs button:hover{color:var(--ink);background:var(--surface-2)}
+.tabs button[aria-selected="true"]{background:var(--surface-3);color:var(--ink);font-weight:600}
+
+.filters{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--surface-2)}
+.fgroup{display:flex;align-items:center;gap:6px}
+.fgroup__label{font:500 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+.ftog{
+  height:22px;padding:0 8px;border:1px solid var(--line-2);border-radius:2px;background:var(--surface);
+  font:11px var(--mono);color:var(--ink-3);cursor:pointer;
+}
+.ftog:hover{color:var(--ink)}
+.ftog[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:var(--on-ink)}
+
+/* ---------- tables ---------- */
+.tablewrap{overflow-x:auto}
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.tbl thead th{
+  font:500 10px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);
+  text-align:left;padding:9px 12px;background:var(--surface-2);
+  border-bottom:1px solid var(--line);white-space:nowrap;
+}
+.tbl thead th.num{text-align:right}
+.tbl tbody td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.tbl tbody tr:last-child td{border-bottom:0}
+.tbl tbody tr[data-act]{cursor:pointer}
+.tbl tbody tr[data-act]:hover{background:var(--surface-2)}
+.tbl tbody tr[aria-selected="true"]{background:var(--row-sel)}
+.tbl tbody tr[tabindex]:focus-visible{outline:2px solid var(--ink);outline-offset:-2px}
+.tbl tbody tr[aria-selected="true"] td:first-child{box-shadow:inset 2px 0 0 var(--ink)}
+.tbl .num{text-align:right;font-family:var(--mono);font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tbl .name{font-weight:600}
+.tbl .sub{font-size:11px;color:var(--ink-3);font-family:var(--mono)}
+.tbl__actions{display:flex;gap:4px;justify-content:flex-end}
+.tbl tbody tr.total td{border-top:1px solid var(--line-2);font-weight:600;background:var(--surface-2)}
+.tbl tbody tr.locked{cursor:default}
+.tbl tbody tr.locked:hover{background:transparent}
+.tbl tbody tr.locked td:first-child{box-shadow:none}
+
+/* ---------- meter ---------- */
+.meter{display:block;width:100%;height:6px;background:var(--surface-3);border-radius:1px;overflow:hidden}
+.meter__seg{display:block;height:100%}
+.meter__seg[data-k="os"]{background:var(--os)}
+.meter__seg[data-k="llm"]{background:var(--llm)}
+.meter__seg[data-k="tts"]{background:var(--tts)}
+.meter__seg[data-k="free"]{background:repeating-linear-gradient(135deg,var(--surface-3),var(--surface-3) 4px,var(--line-2) 4px,var(--line-2) 8px)}
+
+.fig__v{display:block;margin-top:5px;font:600 17px var(--mono);font-variant-numeric:tabular-nums}
+.fig__v small{font-size:11px;color:var(--ink-3);font-weight:400;margin-left:3px}
+
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));border-top:1px solid var(--line)}
+.fact{padding:11px 14px;border-right:1px solid var(--line)}
+.fact:last-child{border-right:0}
+.fact__v{display:block;margin-top:5px;font:600 13px var(--mono);font-variant-numeric:tabular-nums}
+
+/* ---------- events ---------- */
+.events{display:grid}
+.event{display:grid;grid-template-columns:52px 6px minmax(0,1fr);gap:10px;align-items:baseline;padding:8px 14px;border-bottom:1px solid var(--line)}
+.event:last-child{border-bottom:0}
+.event__time{font:10.5px var(--mono);color:var(--ink-4)}
+.event__dot{width:5px;height:5px;border-radius:1px;background:var(--ink-4);transform:translateY(-1px)}
+.event__dot[data-tone="ok"]{background:var(--ok)}
+.event__dot[data-tone="warn"]{background:var(--warn)}
+.event__dot[data-tone="bad"]{background:var(--bad)}
+.event__dot[data-tone="info"]{background:var(--info)}
+.event__text{font-size:12.5px;color:var(--ink-2)}
+
+/* ---------- inspector ---------- */
+.insp{grid-area:insp;background:var(--surface);border-left:1px solid var(--line);display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.insp__head{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.insp__title{font-size:13.5px;font-weight:600;line-height:1.3}
+.insp__sub{font:10.5px var(--mono);color:var(--ink-4);margin-top:2px}
+.insp__x{margin-left:auto}
+.insp__tabs{display:flex;gap:2px;padding:0 14px;border-bottom:1px solid var(--line)}
+.insp__tabs button{
+  height:28px;padding:0 9px;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;background:none;
+  font-size:11.5px;color:var(--ink-3);cursor:pointer;
+}
+.insp__tabs button[aria-selected="true"]{color:var(--ink);font-weight:600;border-bottom-color:var(--ink)}
+.insp__body{flex:1;overflow:auto;padding:14px;display:grid;gap:16px;align-content:start}
+.insp__foot{padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:6px}
+.insp__foot .btn{flex:1}
+
+.kv{display:grid;grid-template-columns:92px minmax(0,1fr);gap:8px 10px;align-items:baseline}
+.kv__k{font:500 10px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3)}
+.kv__v{font-size:12.5px;word-break:break-word}
+.kv__v.mono{font-size:11.5px}
+
+.note{display:grid;gap:6px;padding:11px 12px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface-2)}
+.note h4{margin:0;font:500 10px var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)}
+.note p{margin:0;font-size:12.5px;color:var(--ink-2)}
+.note ul{margin:0;padding-left:16px;font-size:12.5px;color:var(--ink-2)}
+.note li{margin:4px 0}
+.note[data-tone="warn"]{border-color:color-mix(in srgb,var(--warn) 34%,transparent);background:color-mix(in srgb,var(--warn) 9%,transparent)}
+.note[data-tone="bad"]{border-color:color-mix(in srgb,var(--bad) 32%,transparent);background:color-mix(in srgb,var(--bad) 8%,transparent)}
+.note[data-tone="ok"]{border-color:color-mix(in srgb,var(--ok) 32%,transparent);background:color-mix(in srgb,var(--ok) 8%,transparent)}
+
+.matrix{display:grid;gap:0}
+.matrix__row{display:grid;grid-template-columns:80px minmax(0,1fr);gap:10px;padding:9px 0;border-bottom:1px solid var(--line);align-items:start}
+.matrix__row:last-child{border-bottom:0}
+.matrix__k{font:500 10px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);padding-top:2px}
+.matrix__v{display:grid;gap:4px}
+.matrix__why{font-size:11.5px;color:var(--ink-2)}
+
+/* ---------- terminal ---------- */
+.term{background:var(--term-bg);border-radius:var(--r);padding:11px 12px;font:11px/1.62 var(--mono);color:var(--term-ink);overflow:auto;max-height:340px}
+.term__line{display:block;white-space:pre-wrap;word-break:break-word}
+.term b{color:#8fb8ff;font-weight:600}
+.term i{color:#e3b341;font-style:normal}
+.term u{color:#ff9292;text-decoration:none}
+
+/* ---------- settings ---------- */
+.setrow{display:flex;align-items:center;gap:16px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.setrow:last-child{border-bottom:0}
+.setrow__label{font-size:12.5px;font-weight:600}
+.setrow__desc{font-size:11.5px;color:var(--ink-3);margin-top:3px;max-width:64ch}
+.setrow__ctl{margin-left:auto;flex:none;display:flex;gap:8px;align-items:center}
+.switch{width:34px;height:19px;border-radius:10px;border:1px solid var(--line-2);background:var(--surface-3);position:relative;cursor:pointer;padding:0;flex:none}
+.switch::after{content:'';position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:var(--surface);border:1px solid var(--line-2);transition:left .14s ease}
+.switch[aria-checked="true"]{background:var(--ink);border-color:var(--ink)}
+.switch[aria-checked="true"]::after{left:17px;border-color:var(--ink)}
+
+/* ---------- modal ---------- */
+dialog.dlg{
+  border:1px solid var(--line-2);border-radius:5px;padding:0;
+  width:min(520px,calc(100vw - 32px));max-width:none;
+  background:var(--surface);color:var(--ink);box-shadow:var(--shadow);
+}
+dialog.dlg::backdrop{background:var(--scrim)}
+.dlg__head{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+.dlg__title{font-size:13.5px;font-weight:600}
+.dlg__body{padding:16px;display:grid;gap:14px}
+.dlg__foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--line);background:var(--surface-2)}
+
+.field{display:grid;gap:5px}
+.field__label{font:500 10px var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)}
+.input{height:29px;padding:0 9px;border:1px solid var(--line-2);border-radius:var(--r);background:var(--surface);font-size:12.5px;width:100%}
+.input:focus{outline:none;border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+.field__hint{font-size:11px;color:var(--ink-3)}
+.field__error{font-size:11px;color:var(--bad)}
+.radios{display:grid;gap:8px}
+.radio{display:flex;gap:9px;align-items:flex-start;cursor:pointer}
+.radio__title{display:block;font-size:12.5px;font-weight:600}
+.radio__desc{display:block;font-size:11.5px;color:var(--ink-3);margin-top:2px}
+.verlist{display:grid;gap:6px}
+.ver{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid var(--line);border-radius:var(--r);cursor:pointer;font:12px var(--mono)}
+.ver:hover{background:var(--surface-2)}
+.ver__tag{margin-left:auto;font-size:10.5px}
+.code{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;font:11px/1.6 var(--mono);color:var(--ink-2);overflow:auto;margin:0}
+
+/* ---------- toasts ---------- */
+.toasts{position:fixed;right:16px;bottom:16px;display:grid;gap:8px;z-index:60;justify-items:end}
+.toast{display:flex;align-items:center;gap:8px;padding:9px 12px;background:var(--ink);color:var(--on-ink);border-radius:var(--r);font-size:12px;box-shadow:var(--shadow);max-width:340px}
+.toast .od-icon{--od-icon-size:14px}
+.toast[data-tone="bad"]{background:#8e2a21}
+.toast[data-tone="ok"]{background:#245c40}
+
+/* ---------- misc ---------- */
+.empty{display:grid;gap:7px;place-items:center;text-align:center;padding:44px 20px}
+.empty__title{font-size:13px;font-weight:600}
+.empty__text{font-size:12px;color:var(--ink-3);max-width:46ch}
+.qa{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.qa__btn{display:flex;align-items:center;gap:8px;padding:9px 11px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);cursor:pointer;font-size:12px;text-align:left;color:var(--ink-2)}
+.qa__btn:hover{background:var(--surface-2);color:var(--ink)}
+.qa__btn .od-icon{--od-icon-size:15px;color:var(--ink-3)}
+.qrow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line)}
+.qrow:last-child{border-bottom:0}
+.qrow__meter{display:grid;gap:4px;min-width:0}
+.qrow__pct{font:11px var(--mono);color:var(--ink-3);font-variant-numeric:tabular-nums}
+
+@media (max-width:1000px){
+  :root{--rail:50px}
+  .rail__grp{padding:0 6px}
+  .rail__label,.rail__count{display:none}
+  .rail__item{justify-content:center;padding:0}
+  .rail__item>span:not(.rail__icon){display:none}
+  .rail__foot{padding:10px 8px;text-align:center}
+  .rail__status span:not(.rail__dot){display:none}
+  .scroll{padding:16px 14px 44px}
+  .topbar{padding:0 14px}
+}
+@media (max-width:760px){
+  .app,.app.has-insp{grid-template-columns:var(--rail) minmax(0,1fr);grid-template-areas:"tb tb" "rail main"}
+  .insp{position:fixed;left:0;right:0;top:30px;bottom:0;z-index:45;border-left:0;border-top:1px solid var(--line-2)}
+}
+@media (max-width:620px){
+  .qa{grid-template-columns:minmax(0,1fr)}
+  .setrow{flex-direction:column;align-items:flex-start;gap:9px}
+  .setrow__ctl{margin-left:0;width:100%;flex-wrap:wrap}
+  .search input{width:130px}
+  .kv{grid-template-columns:minmax(0,1fr)}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition-duration:.01ms !important;animation-duration:.01ms !important}
+}
+</style>
+</head>
+<script>
+"use strict";
+
+/* ---------------- icons ---------------- */
+const ICONS = {
+  cube:'M12 3 20.2 7.2v9.6L12 21l-8.2-4.2V7.2z M3.8 7.2 12 11.6l8.2-4.4 M12 11.6V21',
+  play:'M7.6 5v14L19 12z',
+  layers:'M12 3.2 20.4 7.6 12 12 3.6 7.6z M3.6 12.6 12 17l8.4-4.4 M3.6 16.9 12 21.3l8.4-4.4',
+  sliders:'M4 7h8 M16.5 7H20 M4 12h3.5 M12 12h8 M4 17h8 M16.5 17H20 M13.5 7a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0z M9 12a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0z M13.5 17a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0z',
+  search:'M11 18.6a7.6 7.6 0 1 0 0-15.2 7.6 7.6 0 0 0 0 15.2z M20.5 20.5l-4.1-4.1',
+  refresh:'M20.5 12a8.5 8.5 0 1 1-2.5-6 M20.5 4v5h-5',
+  download:'M12 3.5v11 M7.6 10.4 12 14.8l4.4-4.4 M4 19.8h16',
+  trash:'M4 6.6h16 M9.2 6.6V3.8h5.6v2.8 M6.2 6.6l.9 13.6h9.8l.9-13.6',
+  folder:'M3.5 7.2a1.7 1.7 0 0 1 1.7-1.7h3.6l2 2.2h7a1.7 1.7 0 0 1 1.7 1.7v8.4a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7z',
+  plus:'M12 5v14 M5 12h14',
+  x:'M6.4 6.4l11.2 11.2 M17.6 6.4 6.4 17.6',
+  check:'M4.8 12.4 9.6 17.2 19.2 7.2',
+  alert:'M12 3.6 21.6 20H2.4z M12 9.8v4.6 M12 17.2v.6',
+  copy:'M9.2 9.2h9.1v9.1a1.7 1.7 0 0 1-1.7 1.7H9.2a1.7 1.7 0 0 1-1.7-1.7z M5 14.8H4.6a1.7 1.7 0 0 1-1.7-1.7V4.6a1.7 1.7 0 0 1 1.7-1.7h8.5A1.7 1.7 0 0 1 14.8 4.6v.6',
+  terminal:'M4 4.8h16v14.4H4z M8 9.6l3 2.4-3 2.4 M13 15h4',
+  chevron:'M6.5 9.5 12 15l5.5-5.5',
+  more:'M6.2 12h.01 M12 12h.01 M17.8 12h.01',
+  cpu:'M9 9h6v6H9z M9 3.4v3.2 M15 3.4v3.2 M9 17.4v3.2 M15 17.4v3.2 M3.4 9h3.2 M3.4 15h3.2 M17.4 9h3.2 M17.4 15h3.2 M6.6 6.6h10.8v10.8H6.6z',
+  memory:'M3.4 7h17.2v10H3.4z M7.4 10v4 M11.4 10v4 M15.4 10v4',
+  gpu:'M3 6.4h13v11.2H3z M16 10.4h4.6v3.2H16 M18.3 12h.01',
+  disk:'M12 3.4a8.6 8.6 0 1 0 0 17.2 8.6 8.6 0 0 0 0-17.2z M12 7.8a4.2 4.2 0 1 0 0 8.4 4.2 4.2 0 0 0 0-8.4z',
+  clock:'M12 3.4a8.6 8.6 0 1 0 0 17.2 8.6 8.6 0 0 0 0-17.2z M12 7.2V12l3 1.8',
+  zap:'M13.4 2.6 4.8 13.4h5.4l-.6 8 8.6-10.8h-5.4z',
+  mic:'M12 3.4a2.9 2.9 0 0 1 2.9 2.9v5.4a2.9 2.9 0 0 1-5.8 0V6.3A2.9 2.9 0 0 1 12 3.4z M5.6 11a6.4 6.4 0 0 0 12.8 0 M12 17.4v3.2',
+  chat:'M4 5.4h16v10.2H9.6L4.8 19.6z',
+  arrow:'M4.8 12h14 M13 6.2l6 5.8-6 5.8',
+  info:'M12 3.4a8.6 8.6 0 1 0 0 17.2 8.6 8.6 0 0 0 0-17.2z M12 11.2v5 M12 8v.5',
+  bulb:'M9.4 18.2h5.2 M10.4 21h3.2 M12 3.2a6 6 0 0 1 6 6c0 3-2 4.6-2 6H8c0-1.4-2-3-2-6a6 6 0 0 1 6-6z',
+  filter:'M3.6 5.4h16.8l-6.6 7.8v6L10.2 17v-3.8z',
+  sort:'M7 4.4v15.2 M7 19.6l-3-3 M7 19.6l3-3 M17 19.6V4.4 M17 4.4l-3 3 M17 4.4l3 3',
+  open:'M14.2 4h5.8v5.8 M20 4l-8.6 8.6 M18.2 14v5.4a.8.8 0 0 1-.8.8H4.8a.8.8 0 0 1-.8-.8V6.6a.8.8 0 0 1 .8-.8H10',
+  stop:'M7.4 7.4h9.2v9.2H7.4z',
+  bolt:'M13.4 2.6 4.8 13.4h5.4l-.6 8 8.6-10.8h-5.4z',
+  shield:'M12 3.2 19.6 6v6c0 4.4-3 7.6-7.6 8.8C7.4 19.6 4.4 16.4 4.4 12V6z M9 12.2l2.2 2.2 4-4.2',
+  eye:'M2.8 12S6.6 5.8 12 5.8 21.2 12 21.2 12 17.4 18.2 12 18.2 2.8 12 2.8 12z M12 9.4a2.6 2.6 0 1 0 0 5.2 2.6 2.6 0 0 0 0-5.2z'
+};
+const FILLED = new Set(['play','stop','bolt','zap']);
+function icon(name, size){
+  const d = ICONS[name]; if(!d) return '';
+  const st = size ? ` style="--od-icon-size:${size}px"` : '';
+  if(FILLED.has(name)) return `<svg class="od-icon"${st} viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="${d}"/></svg>`;
+  return `<svg class="od-icon"${st} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`;
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+/* ---------------- data ---------------- */
+const RUNTIMES = [
+  { id:'mlx', name:'MLX', icon:'cpu', desc:'Apple 机器学习框架，权重以 safetensors + MLX 量化存储',
+    installed:true, version:'0.29.3', channel:'pip · venv', types:['LLM','TTS'], services:1,
+    path:'~/Library/Application Support/LMLathe/runtimes/mlx',
+    versions:['0.29.3','0.28.1','0.27.4','0.25.2'], minVersion:'0.25.0' },
+  { id:'llamacpp', name:'llama.cpp', icon:'zap', desc:'C++ 推理引擎，GGUF 权重的原生运行时',
+    installed:true, version:'b6120', channel:'二进制', types:['LLM'], services:2,
+    path:'~/Library/Application Support/LMLathe/runtimes/llama.cpp',
+    versions:['b6120','b5981','b5872'], minVersion:'b5980' },
+  { id:'sglang', name:'SGLang', icon:'layers', desc:'Python 服务引擎，面向多模态与高并发场景',
+    installed:false, version:null, available:'0.4.6', channel:'pip · venv', types:['LLM','TTS'], services:0,
+    path:'~/Library/Application Support/LMLathe/runtimes/sglang',
+    versions:['0.4.6','0.4.3','0.4.1'], minVersion:'0.4.0', installPct:0 }
+];
+
+const LOCAL_MODELS = [
+  { id:'m1', name:'Qwen3-8B', repo:'Qwen/Qwen3-8B-GGUF', type:'LLM', format:'GGUF', quant:'Q4_K_M', size:4.7, vram:6.1, params:'8B',
+    status:'ready', runtime:'llamacpp', used:'2 小时前', installed:'2026-09-12', license:'apache-2.0',
+    desc:'阿里通义千问第三代 8B 指令模型，兼顾中文与多轮对话表现。',
+    files:[['Qwen3-8B-Q4_K_M.gguf',4.66],['tokenizer.json',11.2]] },
+  { id:'m2', name:'Qwen3-4B-Instruct-2507', repo:'Qwen/Qwen3-4B-Instruct-2507-GGUF', type:'LLM', format:'GGUF', quant:'Q4_K_M', size:2.5, vram:3.2, params:'4B',
+    status:'ready', runtime:'llamacpp', used:'1 天前', installed:'2026-10-02', license:'apache-2.0',
+    desc:'4B 轻量指令模型，适合常驻低延迟场景。',
+    files:[['Qwen3-4B-Q4_K_M.gguf',2.48]] },
+  { id:'m3', name:'Qwen3-8B-4bit', repo:'mlx-community/Qwen3-8B-4bit', type:'LLM', format:'MLX', quant:'4bit', size:4.4, vram:4.8, params:'8B',
+    status:'ready', runtime:'mlx', used:'6 小时前', installed:'2026-10-21', license:'apache-2.0',
+    desc:'Qwen3-8B 的 MLX 4bit 量化版，Apple Silicon 上吞吐更高。',
+    files:[['model.safetensors',4.31],['config.json',0.4]] },
+  { id:'m4', name:'gemma-3-12b-it', repo:'mlx-community/gemma-3-12b-it-4bit', type:'LLM', format:'MLX', quant:'4bit', size:7.1, vram:7.6, params:'12B',
+    status:'ready', runtime:'mlx', used:'3 天前', installed:'2026-10-08', license:'gemma',
+    desc:'Google Gemma 3 的 12B 指令版本，多语言与视觉能力均衡。',
+    files:[['model.safetensors',7.02]] },
+  { id:'m5', name:'Kokoro-82M', repo:'mlx-community/Kokoro-82M-4bit', type:'TTS', format:'MLX', quant:'4bit', size:0.32, vram:0.9, params:'82M',
+    status:'ready', runtime:'mlx', used:'1 小时前', installed:'2026-10-30', license:'apache-2.0',
+    desc:'轻量英文语音合成模型，多音色，速度快、内存占用极低。',
+    files:[['model.safetensors',0.31],['voices/*.bin',0.42]] },
+  { id:'m6', name:'Llama-3.3-70B-Instruct', repo:'unsloth/Llama-3.3-70B-Instruct-GGUF', type:'LLM', format:'GGUF', quant:'Q4_K_M', size:40.0, vram:41.5, params:'70B',
+    status:'over', runtime:'llamacpp', used:'从未使用', installed:'2026-10-30', license:'llama3.3',
+    desc:'Meta Llama 3.3 的 70B 指令模型，质量高但需要大内存。',
+    files:[['Llama-3.3-70B-Q4_K_M.gguf',39.8]] },
+  { id:'m7', name:'F5-TTS', repo:'SWivid/F5-TTS', type:'TTS', format:'Safetensors', quant:'—', size:1.4, vram:3.6, params:'336M',
+    status:'convert', runtime:null, used:'从未使用', installed:'2026-10-25', license:'cc-by-nc-4.0',
+    desc:'基于流匹配语音克隆的 TTS 模型，需要转换为 GGUF 后由 llama.cpp 加载。',
+    files:[['model_125000.safetensors',1.36]] },
+  { id:'m8', name:'CosyVoice2-0.5B', repo:'FunAudioLLM/CosyVoice2-0.5B', type:'TTS', format:'Safetensors', quant:'—', size:1.0, vram:2.8, params:'500M',
+    status:'convert', runtime:null, used:'从未使用', installed:'2026-10-18', license:'apache-2.0',
+    desc:'阿里通义语音合成模型，支持零样本音色克隆。',
+    files:[['llm.pt',0.62],['flow.pt',0.31]] },
+  { id:'m9', name:'Qwen3-30B-A3B', repo:'Qwen/Qwen3-30B-A3B', type:'LLM', format:'Safetensors', quant:'—', size:18.6, vram:19.2, params:'30B (MoE)',
+    status:'noruntime', runtime:'sglang', used:'从未使用', installed:'2026-11-01', license:'apache-2.0',
+    desc:'稀疏激活 MoE 模型，需由 SGLang 服务引擎加载。',
+    files:[['model-00001-of-00004.safetensors',4.7],['model-00002-of-00004.safetensors',4.7]] }
+];
+
+const CATALOG = [
+  { id:'d1', name:'Qwen3-8B', repo:'Qwen/Qwen3-8B-GGUF', type:'LLM', format:'GGUF', quant:'Q4_K_M', params:'8B', size:4.7, downloads:'1.2M', updated:'3 天前', license:'apache-2.0',
+    desc:'阿里通义千问第三代 8B 指令模型的官方 GGUF 量化仓库。' },
+  { id:'d2', name:'Qwen3-4B-Instruct-2507', repo:'Qwen/Qwen3-4B-Instruct-2507-GGUF', type:'LLM', format:'GGUF', quant:'Q4_K_M', params:'4B', size:2.5, downloads:'862K', updated:'5 天前', license:'apache-2.0',
+    desc:'4B 轻量指令模型，长上下文与低延迟兼顾。' },
+  { id:'d3', name:'Qwen3-8B-4bit', repo:'mlx-community/Qwen3-8B-4bit', type:'LLM', format:'MLX', quant:'4bit', params:'8B', size:4.4, downloads:'42.1K', updated:'2 天前', license:'apache-2.0',
+    desc:'Qwen3-8B 的 MLX 4bit 量化版，为 Apple Silicon 转换。' },
+  { id:'d4', name:'Llama-3.3-70B-Instruct-GGUF', repo:'unsloth/Llama-3.3-70B-Instruct-GGUF', type:'LLM', format:'GGUF', quant:'Q4_K_M', params:'70B', size:40.0, downloads:'784K', updated:'1 周前', license:'llama3.3',
+    desc:'Meta Llama 3.3 70B 指令模型的多档位量化仓库。' },
+  { id:'d5', name:'gemma-3-12b-it', repo:'google/gemma-3-12b-it', type:'LLM', format:'Safetensors', quant:'FP16', params:'12B', size:23.5, downloads:'541K', updated:'3 天前', license:'gemma',
+    desc:'Google Gemma 3 的 12B 多模态指令版本。' },
+  { id:'d6', name:'phi-4-mini-instruct', repo:'microsoft/phi-4-mini-instruct', type:'LLM', format:'GGUF', quant:'Q4_K_M', params:'3.8B', size:2.3, downloads:'312K', updated:'2 周前', license:'mit',
+    desc:'微软 Phi-4 mini，3.8B 参数的紧凑指令模型。' },
+  { id:'d7', name:'Kokoro-82M-4bit', repo:'mlx-community/Kokoro-82M-4bit', type:'TTS', format:'MLX', quant:'4bit', params:'82M', size:0.32, downloads:'12.4K', updated:'1 周前', license:'apache-2.0',
+    desc:'Kokoro 语音合成的 MLX 4bit 版本，含 54 个音色。' },
+  { id:'d8', name:'Kokoro-82M', repo:'hexgrad/Kokoro-82M', type:'TTS', format:'GGUF', quant:'Q8_0', params:'82M', size:0.34, downloads:'24.8K', updated:'3 周前', license:'apache-2.0',
+    desc:'Kokoro 语音合成原始仓库，提供 ONNX 与 GGUF 权重。' },
+  { id:'d9', name:'F5-TTS', repo:'SWivid/F5-TTS', type:'TTS', format:'Safetensors', quant:'FP16', params:'336M', size:1.4, downloads:'98.2K', updated:'1 个月前', license:'cc-by-nc-4.0',
+    desc:'流匹配语音克隆模型，10 秒参考音频即可复刻音色。' },
+  { id:'d10', name:'CosyVoice2-0.5B', repo:'FunAudioLLM/CosyVoice2-0.5B', type:'TTS', format:'Safetensors', quant:'FP16', params:'500M', size:1.0, downloads:'66.7K', updated:'2 周前', license:'apache-2.0',
+    desc:'通义语音合成模型，支持零样本与跨语言音色克隆。' },
+  { id:'d11', name:'granite-speech-3.3-2b', repo:'ibm-grande/granite-speech-3.3-2b', type:'TTS', format:'Safetensors', quant:'FP16', params:'2B', size:4.1, downloads:'31.5K', updated:'3 周前', license:'apache-2.0',
+    desc:'IBM Granite 语音模型，英文 TTS 与识别一体。' },
+  { id:'d12', name:'parler-tts-mini-v1', repo:'parler-tts/parler-tts-mini-v1', type:'TTS', format:'Safetensors', quant:'FP16', params:'880M', size:1.9, downloads:'18.3K', updated:'1 个月前', license:'apache-2.0',
+    desc:'支持用自然语言描述声音的轻量 TTS 模型。' }
+];
+
+const SERVICES = [
+  { id:'s1', name:'Qwen3-8B-Chat', model:'Qwen3-8B', modelId:'m1', runtime:'llamacpp', type:'LLM', port:8080, status:'running',
+    startedAt:'14:02', reqs:'12.4K', latency:'42 ms', vram:6.1, health:98, logs:[] },
+  { id:'s2', name:'Kokoro-TTS', model:'Kokoro-82M', modelId:'m5', runtime:'mlx', type:'TTS', port:8020, status:'running',
+    startedAt:'14:36', reqs:'3.1K', latency:'88 ms', vram:0.9, health:99, logs:[] },
+  { id:'s3', name:'gemma-3-12b', model:'gemma-3-12b-it', modelId:'m4', runtime:'mlx', type:'LLM', port:8081, status:'stopped',
+    startedAt:null, reqs:'—', latency:'—', vram:0, health:0, logs:[] },
+  { id:'s4', name:'F5-TTS-Cosy', model:'F5-TTS', modelId:'m7', runtime:'sglang', type:'TTS', port:30000, status:'failed',
+    startedAt:null, reqs:'—', latency:'—', vram:0, health:0, error:'运行时 SGLang 未安装，无法加载此模型', logs:[] }
+];
+
+const EVENTS = [
+  { tone:'ok', time:'2 分钟前', text:'服务 Qwen3-8B-Chat 健康检查通过' },
+  { tone:'ok', time:'9 分钟前', text:'已下载 Kokoro-82M-4bit（0.32 GB）' },
+  { tone:'warn', time:'26 分钟前', text:'F5-TTS 需要转换为 GGUF 才能由 llama.cpp 加载' },
+  { tone:'info', time:'1 小时前', text:'运行时 llama.cpp 已更新至 b6120' },
+  { tone:'bad', time:'2 小时前', text:'服务 F5-TTS-Cosy 启动失败：运行时未安装' },
+  { tone:'ok', time:'昨天 22:14', text:'已下载 Qwen3-30B-A3B（18.6 GB）' }
+];
+
+const GATEWAY = { running:true, addr:'127.0.0.1', port:7800, routes:2, today:1284, auth:false, authDecided:false };
+
+const NOTES = {
+  models:{
+    title:'模型',
+    lead:'发现与管理是同一批对象的两个状态，所以合成一个入口、两个标签页。',
+    points:[
+      '发现与已下载是同一批对象的两个状态，所以合成一个入口，但拆成两个各自有身份的页面：标题、筛选组、表格列都不一样，不共用一套。',
+      '已下载这一页只做一件事：管磁盘上已经有的模型——磁盘占用、显存估算、就绪度、最近使用，以及从这里创建服务。',
+      '探索的时候要能看见哪些仓库已经在本地。已下载的直接打「已下载」标记，下载按钮换成「已在本地」，点一下直接跳到已下载页并选中它；还可以只看未下载的。',
+      '两组标签互不干扰：用途（LLM / TTS）与格式（GGUF / MLX / Safetensors）是正交维度，不需要联动——扩散模型按你的要求移除之后，格式对两类模型都成立。',
+      '表格列给的是显存估算而不是文件大小。决定「能不能同时跑」的是加载后的占用；磁盘大小只说明要留多少空间。',
+      '就绪度拆成格式、能力、硬件、版本四个维度，任一不通过都写明原因，不再给一个无法验证的「✓ All」。',
+      '默认按显存估算排序，而不是按名称或更新时间——用户打开这一页最常问的是「哪个最占地方」。'
+    ],
+    nots:'不在应用内跑推理，也不做产物库与工作流编排；产物边界划在「网关接出去」那条线上。'
+  },
+  services:{
+    title:'服务',
+    lead:'正在对外提供推理的东西，以及它们出了什么问题。',
+    points:[
+      '网关状态放在页面最上方。MLX、llama.cpp、SGLang 都提供 OpenAI 兼容接口，网关是天然的汇总层，一个端口按模型名分发。',
+      '日志不是附属品。启动失败时第一件事是看后端的 stdout / stderr，所以日志做成选中实例即可读，而不是藏在别处。',
+      '鉴权默认关闭。仅监听回环地址时不需要任何密钥；一旦改成 0.0.0.0，应用提示局域网可访问，并把「要不要加一道钥匙」交给用户决定。',
+      '服务的创建入口只留在模型侧：先挑一个模型，再决定给它开什么运行时、什么端口。服务页不放「新建服务」——脱离模型的服务没有可选项，只有一个空表单。',
+      '服务页只做监控与日志。表格里不摆部署、启动、停止、重启，只留一个日志按钮：这一页的任务是「看清楚现在在跑什么」，不是「改配置」。真正改变服务状态的动作（启停、重启）跟着模型走，在模型详情的「用量」里对着它创建出来的服务逐个操作。',
+      '不做限流。每分钟请求数、令牌数、并发上限三档全部移除——本地自用场景下它们只会带来误伤。'
+    ],
+    nots:'不提供 IP 白名单与访问审计。需要这些时用系统防火墙更合适。'
+  },
+  runtime:{
+    title:'Runtime',
+    lead:'引擎是 LLM 与 TTS 的落地环境，所以必须能装、能版本化、能查健康。',
+    points:[
+      '版本控制指的是锁版本、可切换、且切换后兼容性会联动。例如下面把 llama.cpp 降到 b5872，两个 Q4_K_M 权重会立刻变成「需升级运行时」。',
+      '安装前先展示完整命令与下载来源，执行时实时输出日志，不做静默安装。',
+      '卸载在有实例占用或有模型绑定时被禁用，并列出具体是哪几个。',
+      '离线时跳过更新检查，不报错——这是本地优先的工具，离线不该是错误状态。'
+    ],
+    nots:'不做运行时插件市场，也不做跨平台二进制分发。'
+  },
+  settings:{
+    title:'设置',
+    lead:'少量高价值设置，能改的都在这里，改了立刻生效。',
+    points:[
+      '监听地址与鉴权联动。改成 0.0.0.0 时弹出一次说明，并把「启用鉴权 / 不启用」的选择持久记录下来，日后可随时更改。',
+      '下载并发、日志保留、目录路径放在一页，不分三级菜单。',
+      '导出配置 JSON 同时充当完整备份：模型索引、运行时配置、路由、设置都在里面。',
+      '整个状态自动存在浏览器本地：模型索引、服务、下载队列、运行时版本、设置、当前页面与筛选条件都会原样恢复，刷新不丢。真实版本应该落在应用自己的数据目录里，这里只是用 localStorage 模拟。',
+      '恢复出厂需要输入确认词，避免误触。'
+    ],
+    nots:'不提供账号体系与云端同步，纯本地。'
+  }
+};
+
+/* ---------------- state ---------------- */
+const state = {
+  view:'models',
+  modelTab:'discover',
+  discover:{ q:'', type:'all', format:'all', installed:'all', sort:'downloads' },
+  local:{ q:'', type:'all', status:'all', sort:'vram' },
+  queue:[],
+  recent:[],
+  models:LOCAL_MODELS.slice(),
+  services:SERVICES.slice(),
+  settings:{
+    modelRoot:'~/Library/Application Support/LMLathe/models',
+    runtimeDir:'~/Library/Application Support/LMLathe/runtimes',
+    connections:4,
+    logDays:14,
+    bind:'127.0.0.1',
+    auth:false,
+    theme:'跟随系统'
+  }
+};
+</script>
+<body>
+<div class="app" id="app">
+  <header class="titlebar">
+    <span class="lights"><i></i><i></i><i></i></span>
+    <span class="titlebar__name">LM Lathe</span>
+    <span class="titlebar__ctx" id="tbctx">~/Library/Application Support/LMLathe</span>
+  </header>
+
+  <aside class="rail">
+    <nav id="rail-nav"></nav>
+    <div class="rail__foot">
+      <span class="rail__status"><span class="rail__dot" id="daemon-dot"></span><span id="daemon-txt">daemon · 正常</span></span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <span class="topbar__title" id="pg-title"></span>
+      <span class="topbar__sub" id="pg-sub"></span>
+      <span class="od-fill"></span>
+      <span class="topbar__tools" id="pg-tools"></span>
+    </div>
+    <div class="scroll" id="viewscroll">
+      <div class="view" id="view"></div>
+    </div>
+  </main>
+
+  <aside class="insp" id="insp" hidden></aside>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<dialog class="dlg" id="modal"></dialog>
+
+<script>
+"use strict";
+
+/* ============================ helpers ============================ */
+function eyebrow(t){ return '<span class="eyebrow">' + esc(t) + '</span>'; }
+function tagOf(tone, label){
+  return '<span class="tag tag--' + tone + '"><span class="tag__dot"></span>' + esc(label) + '</span>';
+}
+function typeMark(t){ return '<span class="tmark" data-type="' + esc(t) + '">' + esc(t) + '</span>'; }
+function kv(k, v, mono){
+  return '<span class="kv__k">' + esc(k) + '</span><span class="kv__v' + (mono ? ' mono' : '') + '">' + v + '</span>';
+}
+function sheetHead(ey, title, meta, tools){
+  return '<div class="sheet__head"><span class="cellstack"><span class="eyebrow">' + esc(ey) + '</span>'
+    + '<span class="sheet__title">' + esc(title) + '</span></span>'
+    + (tools ? '<span class="sheet__tools">' + tools + '</span>' : '')
+    + (meta ? '<span class="sheet__meta">' + esc(meta) + '</span>' : '') + '</div>';
+}
+const STATUS_TONE = {
+  running:['ok','运行中'], starting:['info','启动中'], stopped:['idle','已停止'], failed:['bad','失败'],
+  ready:['ok','就绪'], convert:['warn','需转换'], over:['bad','显存不足'], noruntime:['warn','缺运行时'],
+  installed:['ok','已安装'], none:['idle','未安装'], installing:['info','安装中'],
+  downloading:['info','下载中'], done:['ok','已完成']
+};
+function statusTag(s){
+  const m = STATUS_TONE[s] || ['idle', s];
+  return tagOf(m[0], m[1]);
+}
+function runtimeName(id){ const r = RUNTIMES.filter(function(x){ return x.id === id; })[0]; return r ? r.name : '—'; }
+function runningServices(){ return state.services.filter(function(s){ return s.status === 'running'; }); }
+function fmt(n, d){ return Number(n).toFixed(d === undefined ? 1 : d); }
+
+/* ============================ nav ============================ */
+const NAV = [
+  { id:'models', label:'模型', icon:'cube', group:'资产', count:function(){ return state.models.length; } },
+  { id:'runtime', label:'运行时', icon:'layers', group:'资产' },
+  { id:'services', label:'服务', icon:'play', group:'运行', count:function(){ return runningServices().length; } },
+  { id:'settings', label:'设置', icon:'sliders', group:'系统' }
+];
+const PAGES = {
+  models:{ title:'模型', sub:'MODELS' },
+  runtime:{ title:'运行时', sub:'ENGINES' },
+  services:{ title:'服务', sub:'ENDPOINTS' },
+  settings:{ title:'设置', sub:'PREFERENCES' }
+};
+function renderNav(){
+  const groups = [];
+  NAV.forEach(function(n){
+    let g = groups.filter(function(x){ return x.name === n.group; })[0];
+    if(!g){ g = { name:n.group, items:[] }; groups.push(g); }
+    g.items.push(n);
+  });
+  document.getElementById('rail-nav').innerHTML = groups.map(function(g){
+    return '<div class="rail__grp"><span class="rail__label eyebrow">' + esc(g.name) + '</span>'
+      + g.items.map(function(n){
+          const c = n.count ? n.count() : null;
+          return '<button class="rail__item" type="button" data-act="nav" data-view="' + n.id + '"'
+            + ' aria-current="' + (state.view === n.id ? 'page' : 'false') + '" title="' + esc(n.label) + '">'
+            + icon(n.icon) + '<span>' + esc(n.label) + '</span>'
+            + (c ? '<span class="rail__count">' + c + '</span>' : '') + '</button>';
+        }).join('')
+      + '</div>';
+  }).join('');
+}
+function toolsFor(view){
+  if(view === 'models'){
+    const q = state.modelTab === 'discover' ? state.discover.q : state.local.q;
+    const ph = state.modelTab === 'discover' ? '搜索 Hugging Face 上的模型…' : '搜索本地模型…';
+    return '<span class="search">' + icon('search')
+      + '<input type="search" data-input="model-q" placeholder="' + esc(ph) + '" value="' + esc(q) + '" aria-label="搜索模型"></span>';
+  }
+  return '<button class="btn btn--ghost" type="button" data-act="notes">' + icon('bulb') + '设计说明</button>';
+}
+
+
+/* ============================ activity ============================ */
+function eventsSheet(){
+  return '<section class="sheet">' + sheetHead('ACTIVITY', '事件流', '最近 ' + EVENTS.length + ' 条')
+      + '<div class="events">' + EVENTS.map(function(e){
+          return '<div class="event"><span class="event__time">' + esc(e.time) + '</span>'
+            + '<span class="event__dot" data-tone="' + e.tone + '"></span>'
+            + '<span class="event__text">' + esc(e.text) + '</span></div>';
+        }).join('') + '</div>'
+    + '</section>';
+}
+</script>
+<script>
+"use strict";
+
+/* ============================ shared bits ============================ */
+function filterRow(label, act, key, value, options){
+  return '<span class="fgroup"><span class="fgroup__label">' + esc(label) + '</span>'
+    + options.map(function(o){
+        return '<button class="ftog" type="button" data-act="' + act + '" data-key="' + key + '" data-val="' + esc(o[0]) + '"'
+          + ' aria-pressed="' + (value === o[0] ? 'true' : 'false') + '">' + esc(o[1]) + '</button>';
+      }).join('')
+    + '</span>';
+}
+function sortSel(act, value, opts){
+  return '<span class="fgroup"><span class="fgroup__label">排序</span>'
+    + '<select class="sel" data-change="' + act + '">'
+    + opts.map(function(o){ return '<option value="' + esc(o[0]) + '"' + (value === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('')
+    + '</select></span>';
+}
+function fact(k, v, tone){
+  return '<span class="fact"><span class="eyebrow">' + esc(k) + '</span>'
+    + '<span class="fact__v"' + (tone ? ' style="color:var(--' + tone + ')"' : '') + '>' + v + '</span></span>';
+}
+
+/* ---------------- theme ---------------- */
+const themeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+function isDark(){
+  const p = state.settings.theme;
+  return p === '深色' || (p !== '浅色' && themeQuery.matches);
+}
+function applyTheme(){
+  document.documentElement.setAttribute('data-theme', isDark() ? 'dark' : 'light');
+}
+/* ---------------- persistence ---------------- */
+const STORE_KEY = 'lmlathe.state';
+const STORE_VER = 1;
+function writeStore(){
+  try{
+    localStorage.setItem(STORE_KEY, JSON.stringify({
+      v:STORE_VER,
+      view:state.view,
+      modelTab:state.modelTab,
+      discover:state.discover,
+      local:state.local,
+      settings:state.settings,
+      models:state.models,
+      services:state.services,
+      queue:state.queue,
+      recent:state.recent,
+      events:EVENTS.slice(0,60),
+      runtimes:RUNTIMES.map(function(r){ return { id:r.id, installed:r.installed, version:r.version }; })
+    }));
+  }catch(err){}
+}
+function clearStore(){
+  try{ localStorage.removeItem(STORE_KEY); }catch(err){}
+}
+function storeInfo(){
+  try{
+    const raw = localStorage.getItem(STORE_KEY);
+    if(!raw) return '已启用 · 尚未保存';
+    return '已启用 · ' + (raw.length / 1024).toFixed(1) + ' KB';
+  }catch(err){ return '不可用 · 浏览器禁用了本地存储'; }
+}
+function restoreState(){
+  let d = null;
+  try{
+    const raw = localStorage.getItem(STORE_KEY);
+    if(raw) d = JSON.parse(raw);
+  }catch(err){ d = null; }
+  if(!d || d.v !== STORE_VER || !Array.isArray(d.models) || !Array.isArray(d.services)) return false;
+  state.view = PAGES[d.view] ? d.view : 'models';
+  state.modelTab = d.modelTab === 'local' ? 'local' : 'discover';
+  state.discover = Object.assign({ q:'', type:'all', format:'all', installed:'all', sort:'downloads' }, d.discover || {});
+  state.local = Object.assign({ q:'', type:'all', status:'all', sort:'vram' }, d.local || {});
+  state.settings = Object.assign({
+    modelRoot:'~/Library/Application Support/LMLathe/models',
+    runtimeDir:'~/Library/Application Support/LMLathe/runtimes',
+    connections:4, logDays:14, bind:'127.0.0.1', auth:false, theme:'跟随系统'
+  }, d.settings || {});
+  state.models = d.models;
+  state.services = d.services;
+  state.queue = Array.isArray(d.queue) ? d.queue : [];
+  state.recent = Array.isArray(d.recent) ? d.recent : [];
+  if(Array.isArray(d.events) && d.events.length){ EVENTS.length = 0; EVENTS.push.apply(EVENTS, d.events); }
+  if(Array.isArray(d.runtimes)){
+    d.runtimes.forEach(function(s){
+      const r = RUNTIMES.filter(function(x){ return x.id === s.id; })[0];
+      if(r){ r.installed = !!s.installed; if(s.version) r.version = s.version; r.installPct = 0; }
+    });
+  }
+  GATEWAY.addr = state.settings.bind;
+  GATEWAY.auth = !!state.settings.auth;
+  return true;
+}
+function copyText(text){
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text); return true; }
+  }catch(err){}
+  try{
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly','');
+    ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  }catch(err){ return false; }
+}
+
+/* ============================ models ============================ */
+function localByRepo(repo){ return state.models.filter(function(m){ return m.repo === repo; })[0]; }
+function discoverList(){
+  const d = state.discover;
+  let list = CATALOG.filter(function(m){
+    if(d.type !== 'all' && m.type !== d.type) return false;
+    if(d.format !== 'all' && m.format !== d.format) return false;
+    if(d.installed === 'no' && localByRepo(m.repo)) return false;
+    if(d.installed === 'yes' && !localByRepo(m.repo)) return false;
+    if(d.q && (m.name + ' ' + m.repo + ' ' + m.desc).toLowerCase().indexOf(d.q.toLowerCase()) === -1) return false;
+    return true;
+  });
+  if(d.sort === 'downloads') list = list.slice().sort(function(a,b){ return parseFloat(b.downloads) - parseFloat(a.downloads); });
+  else if(d.sort === 'updated') list = list.slice().sort(function(a,b){ return a.updated.localeCompare(b.updated, 'zh'); });
+  else if(d.sort === 'size') list = list.slice().sort(function(a,b){ return b.size - a.size; });
+  else list = list.slice().sort(function(a,b){ return a.name.localeCompare(b.name, 'zh'); });
+  return list;
+}
+function discoverTable(){
+  const list = discoverList();
+  if(!list.length){
+    return '<div class="empty"><span class="empty__title">没有符合条件的模型</span>'
+      + '<span class="empty__text">当前筛选：用途 ' + esc(state.discover.type) + ' · 格式 ' + esc(state.discover.format)
+      + (state.discover.installed === 'no' ? ' · 只看未下载' : state.discover.installed === 'yes' ? ' · 只看已下载' : '')
+      + (state.discover.q ? ' · 关键词「' + esc(state.discover.q) + '」' : '') + '</span>'
+      + '<button class="btn" type="button" data-act="clear-discover">清除筛选</button></div>';
+  }
+  return '<div class="tablewrap"><table class="tbl"><thead><tr>'
+    + '<th>模型</th><th>用途</th><th>格式</th><th class="num">参数量</th><th class="num">文件大小</th>'
+    + '<th class="num">下载量</th><th>更新</th><th>许可证</th><th></th>'
+    + '</tr></thead><tbody>'
+    + list.map(function(m){
+        const lm = localByRepo(m.repo);
+        return '<tr data-act="pick-catalog" data-id="' + m.id + '" tabindex="0" aria-selected="' + (insp && insp.kind === 'catalog' && insp.id === m.id) + '">'
+          + '<td><span class="cellstack">'
+            + '<span class="cellrow">' + typeMark(m.type) + '<span class="name">' + esc(m.name) + '</span>'
+              + (lm ? tagOf('ok','已下载') : '') + '</span>'
+            + '<span class="sub">' + esc(m.repo) + '</span></span></td>'
+          + '<td>' + tagOf(m.type === 'LLM' ? 'llm' : 'tts', m.type) + '</td>'
+          + '<td><span class="tag tag--idle">' + esc(m.format) + '</span></td>'
+          + '<td class="num">' + esc(m.params) + '</td>'
+          + '<td class="num">' + fmt(m.size) + ' GB</td>'
+          + '<td class="num">' + esc(m.downloads) + '</td>'
+          + '<td><span class="sub">' + esc(m.updated) + '</span></td>'
+          + '<td><span class="sub">' + esc(m.license) + '</span></td>'
+          + '<td><div class="tbl__actions">'
+            + (lm
+                ? '<button class="btn" type="button" data-act="goto-local" data-id="' + lm.id + '">已在本地</button>'
+                : '<button class="btn btn--icon" type="button" data-act="download" data-id="' + m.id + '" aria-label="下载 ' + esc(m.name) + '" title="下载">' + icon('download') + '</button>')
+          + '</div></td>'
+          + '</tr>';
+      }).join('')
+    + '</tbody></table></div>';
+}
+function localTable(){
+  const d = state.local;
+  let list = state.models.filter(function(m){
+    if(d.type !== 'all' && m.type !== d.type) return false;
+    if(d.status !== 'all' && m.status !== d.status) return false;
+    if(d.q && (m.name + ' ' + m.repo).toLowerCase().indexOf(d.q.toLowerCase()) === -1) return false;
+    return true;
+  });
+  if(d.sort === 'vram') list = list.slice().sort(function(a,b){ return b.vram - a.vram; });
+  else if(d.sort === 'size') list = list.slice().sort(function(a,b){ return b.size - a.size; });
+  else if(d.sort === 'used') list = list.slice().sort(function(a,b){ return (a.used === '从未使用' ? 1 : 0) - (b.used === '从未使用' ? 1 : 0); });
+  else list = list.slice().sort(function(a,b){ return a.name.localeCompare(b.name, 'zh'); });
+  if(!list.length){
+    return '<div class="empty"><span class="empty__title">没有匹配的本地模型</span>'
+      + '<span class="empty__text">换个筛选条件，或切到「发现模型」下载一个。</span>'
+      + '<button class="btn" type="button" data-act="model-tab" data-tab="discover">去发现模型</button></div>';
+  }
+  const runningIds = runningServices().map(function(s){ return s.modelId; });
+  return '<div class="tablewrap"><table class="tbl"><thead><tr>'
+    + '<th>模型</th><th>用途</th><th>格式</th><th class="num">磁盘</th><th class="num">显存估算</th>'
+    + '<th>就绪度</th><th>最近使用</th><th></th>'
+    + '</tr></thead><tbody>'
+    + list.map(function(m){
+        const isRunning = runningIds.indexOf(m.id) !== -1;
+        return '<tr data-act="pick-local" data-id="' + m.id + '" tabindex="0" aria-selected="' + (insp && insp.kind === 'local' && insp.id === m.id) + '">'
+          + '<td><span class="cellrow">' + typeMark(m.type) + '<span class="cellstack"><span class="name">' + esc(m.name) + '</span><span class="sub">' + esc(m.repo) + '</span></span></span></td>'
+          + '<td>' + tagOf(m.type === 'LLM' ? 'llm' : 'tts', m.type) + '</td>'
+          + '<td><span class="tag tag--idle">' + esc(m.format) + (m.quant && m.quant !== '—' ? ' · ' + esc(m.quant) : '') + '</span></td>'
+          + '<td class="num">' + fmt(m.size) + ' GB</td>'
+          + '<td class="num">' + fmt(m.vram) + ' GB</td>'
+          + '<td>' + (isRunning ? tagOf('ok','运行中') : statusTag(m.status))
+            + (state.recent.indexOf(m.id) !== -1 ? ' ' + tagOf('info','新') : '') + '</td>'
+          + '<td><span class="sub">' + esc(m.used) + '</span></td>'
+          + '<td><div class="tbl__actions">'
+            + '<button class="btn btn--icon" type="button" data-act="create-service" data-id="' + m.id + '" aria-label="创建服务" title="创建服务">' + icon('plus') + '</button>'
+            + '<button class="btn btn--icon" type="button" data-act="open-folder" data-id="' + m.id + '" aria-label="打开目录" title="打开目录">' + icon('folder') + '</button>'
+            + '<button class="btn btn--icon" type="button" data-act="delete-model" data-id="' + m.id + '" aria-label="删除模型" title="删除">' + icon('trash') + '</button>'
+            + '</div></td></tr>';
+      }).join('')
+    + '</tbody></table></div>';
+}
+function queueStrip(){
+  if(!state.queue.length) return '';
+  return '<section class="sheet">' + sheetHead('DOWNLOAD QUEUE', '下载队列', state.queue.length + ' 个任务 · 并发 ' + state.settings.connections)
+    + '<div id="queue-list">' + queueRows() + '</div></section>';
+}
+function queueRows(){
+  return state.queue.map(function(q){
+    const done = q.status === 'done';
+    return '<div class="qrow"><div class="qrow__meter">'
+      + '<span class="cellrow"><span class="name" style="font-size:12.5px">' + esc(q.name) + '</span>'
+      + '<span class="qrow__pct">' + Math.floor(q.pct) + '% · ' + fmt(q.size) + ' GB</span></span>'
+      + '<span class="meter"><span class="meter__seg" data-k="llm" style="width:' + q.pct.toFixed(1) + '%"></span></span>'
+      + '</div>'
+      + '<span class="cellrow">'
+      + (done ? tagOf('ok','已完成') : '<span class="qrow__pct">' + fmt(q.speed) + ' MB/s</span>')
+      + '<button class="btn btn--icon" type="button" data-act="cancel-download" data-id="' + q.id + '" aria-label="取消下载" title="取消">' + icon('x') + '</button>'
+      + '</span></div>';
+  }).join('');
+}
+function viewModels(){
+  const isDiscover = state.modelTab === 'discover';
+  const tabbar = '<div class="tabbar" role="tablist">'
+    + '<button type="button" role="tab" data-act="model-tab" data-tab="discover" aria-selected="' + (isDiscover ? 'true' : 'false') + '">'
+      + '发现模型<span class="tabbar__n">' + CATALOG.length + '</span></button>'
+    + '<button type="button" role="tab" data-act="model-tab" data-tab="local" aria-selected="' + (isDiscover ? 'false' : 'true') + '">'
+      + '已下载<span class="tabbar__n">' + state.models.length + '</span></button>'
+    + '</div>';
+  if(isDiscover){
+    return tabbar
+      + '<section class="sheet">'
+      + sheetHead('DISCOVER · HUGGING FACE', '发现模型', CATALOG.length + ' 个候选 · 仓库')
+      + '<div class="filters">'
+        + filterRow('用途', 'dfilter', 'type', state.discover.type, [['all','全部'],['LLM','LLM'],['TTS','TTS']])
+        + filterRow('格式', 'dfilter', 'format', state.discover.format, [['all','全部'],['GGUF','GGUF'],['MLX','MLX'],['Safetensors','Safetensors']])
+        + filterRow('本地', 'dfilter', 'installed', state.discover.installed, [['all','全部'],['no','未下载'],['yes','已下载']])
+        + sortSel('dsort', state.discover.sort, [['downloads','下载量'],['updated','更新时间'],['size','文件大小'],['name','名称']])
+      + '</div>'
+      + '<div id="discover-results">' + discoverTable() + '</div>'
+      + '</section>';
+  }
+  return tabbar
+    + queueStrip()
+    + '<section class="sheet">'
+      + sheetHead('ON DISK · LOCAL', '已下载的模型', state.models.length + ' 个 · ' + fmt(state.models.reduce(function(a,m){ return a + m.size; }, 0)) + ' GB')
+      + '<div class="filters">'
+        + filterRow('用途', 'lfilter', 'type', state.local.type, [['all','全部'],['LLM','LLM'],['TTS','TTS']])
+        + filterRow('状态', 'lfilter', 'status', state.local.status, [['all','全部'],['ready','就绪'],['convert','需转换'],['over','显存不足'],['noruntime','缺运行时']])
+        + sortSel('lsort', state.local.sort, [['vram','显存估算'],['size','磁盘占用'],['used','最近使用'],['name','名称']])
+      + '</div>'
+      + '<div id="local-table">' + localTable() + '</div>'
+      + '</section>';
+}
+
+/* ============================ runtime ============================ */
+function viewRuntime(){
+  const rows = RUNTIMES.map(function(r){
+    const bound = state.services.filter(function(s){ return s.runtime === r.id; });
+    const status = r.installPct > 0 && r.installPct < 100 ? 'installing' : (r.installed ? 'installed' : 'none');
+    const label = status === 'installing' ? '安装中 ' + Math.floor(r.installPct) + '%' : null;
+    return '<tr data-act="pick-runtime" data-id="' + r.id + '" tabindex="0" aria-selected="' + (insp && insp.kind === 'runtime' && insp.id === r.id) + '">'
+      + '<td><span class="cellrow">' + icon(r.icon) + '<span class="cellstack"><span class="name">' + esc(r.name) + '</span><span class="sub">' + esc(r.desc) + '</span></span></span></td>'
+      + '<td class="num">' + (r.installed ? esc(r.version) : '—') + '</td>'
+      + '<td>' + (label ? tagOf('info', label) : statusTag(status)) + '</td>'
+      + '<td><span class="sub">' + r.types.map(function(t){ return esc(t); }).join(' / ') + '</span></td>'
+      + '<td class="num">' + bound.length + '</td>'
+      + '<td><span class="sub">' + esc(r.path.replace('~/Library/Application Support/LMLathe/runtimes/', '…/')) + '</span></td>'
+      + '<td><div class="tbl__actions">'
+        + (r.installed
+            ? '<button class="btn" type="button" data-act="runtime-version" data-id="' + r.id + '">切版本</button>'
+              + '<button class="btn btn--icon" type="button" data-act="health-check" data-id="' + r.id + '" aria-label="健康检查" title="健康检查">' + icon('check') + '</button>'
+            : '<button class="btn btn--primary" type="button" data-act="install-runtime" data-id="' + r.id + '">安装 ' + esc(r.available) + '</button>')
+      + '</div></td></tr>';
+  }).join('');
+  return '<section class="sheet">'
+    + sheetHead('ENGINES', '推理运行时', RUNTIMES.filter(function(r){ return r.installed; }).length + ' / ' + RUNTIMES.length + ' 已安装')
+    + '<div class="tablewrap"><table class="tbl"><thead><tr>'
+    + '<th>运行时</th><th class="num">当前版本</th><th>状态</th><th>能力</th><th class="num">绑定服务</th><th>路径</th><th></th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '</section>';
+}
+
+/* ============================ services ============================ */
+function viewServices(){
+  const gw = GATEWAY;
+  const gateway =
+    '<section class="sheet">' + sheetHead('GATEWAY', 'API 网关', gw.running ? '运行中' : '已停止',
+        '<button class="btn" type="button" data-act="goto-settings">网关设置</button>')
+      + '<div class="facts">'
+        + fact('STATE', gw.running ? '<span class="tag tag--ok"><span class="tag__dot"></span>运行中</span>' : '<span class="tag tag--idle">已停止</span>')
+        + fact('BIND', esc(gw.addr) + ':' + gw.port)
+        + fact('ROUTES', String(gw.routes))
+        + fact('TODAY', String(gw.today))
+        + fact('AUTH', gw.auth ? '<span class="tag tag--warn">已启用</span>' : '<span class="tag tag--idle">关闭</span>')
+      + '</div>'
+    + '</section>';
+
+  const rows = state.services.map(function(s){
+    return '<tr data-act="pick-service" data-id="' + s.id + '" tabindex="0" aria-selected="' + (insp && insp.kind === 'service' && insp.id === s.id) + '">'
+      + '<td><span class="cellrow">' + typeMark(s.type) + '<span class="cellstack"><span class="name">' + esc(s.name) + '</span><span class="sub">' + esc(s.model) + '</span></span></span></td>'
+      + '<td><span class="sub">' + esc(runtimeName(s.runtime)) + '</span></td>'
+      + '<td class="num">' + s.port + '</td>'
+      + '<td class="num">' + (s.vram ? fmt(s.vram) + ' GB' : '—') + '</td>'
+      + '<td class="num">' + esc(s.reqs) + '</td>'
+      + '<td class="num">' + esc(s.latency) + '</td>'
+      + '<td>' + statusTag(s.status) + '</td>'
+      + '<td><div class="tbl__actions">'
+        + '<button class="btn btn--icon" type="button" data-act="svc-logs" data-id="' + s.id + '" aria-label="查看日志" title="查看日志">' + icon('terminal') + '</button>'
+      + '</div></td></tr>';
+  }).join('');
+
+  const list =
+    '<section class="sheet">' + sheetHead('INSTANCES', '服务实例', state.services.length + ' 个 · 在模型页创建')
+      + '<div class="tablewrap"><table class="tbl"><thead><tr>'
+      + '<th>实例</th><th>运行时</th><th class="num">端口</th><th class="num">显存</th><th class="num">请求</th>'
+      + '<th class="num">延迟</th><th>状态</th><th></th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '</section>';
+
+  return gateway + list + eventsSheet();
+}
+
+/* ============================ settings ============================ */
+function setRow(label, desc, ctl){
+  return '<div class="setrow"><span class="cellstack"><span class="setrow__label">' + esc(label) + '</span>'
+    + '<span class="setrow__desc">' + esc(desc) + '</span></span>'
+    + '<span class="setrow__ctl">' + ctl + '</span></div>';
+}
+function viewSettings(){
+  const s = state.settings;
+  const storage =
+    '<section class="sheet">' + sheetHead('STORAGE', '存储与下载')
+      + setRow('模型目录', '所有权重文件的根目录，删除模型时只清理这个目录下的内容。',
+          '<span class="mono" style="font-size:11.5px">' + esc(s.modelRoot) + '</span>')
+      + setRow('运行时目录', '各推理引擎的安装位置，切换版本时只在这个目录内替换。',
+          '<span class="mono" style="font-size:11.5px">' + esc(s.runtimeDir) + '</span>')
+      + setRow('下载并发', '同时下载的文件数。每个文件默认 4 条分段连接。',
+          '<select class="sel" data-change="connections">' + [1,2,4,8,16].map(function(n){ return '<option value="' + n + '"' + (s.connections === n ? ' selected' : '') + '>' + n + ' 个</option>'; }).join('') + '</select>')
+      + setRow('全局限速', '关闭时不限制下载带宽，交给系统网络栈处理。',
+          '<button class="switch" type="button" role="switch" aria-checked="false" aria-label="全局限速"></button>')
+    + '</section>';
+
+  const gateway =
+    '<section class="sheet">' + sheetHead('GATEWAY', '网关')
+      + setRow('监听地址', '默认只监听回环地址，本机工具直接改 base_url 就能用，不需要任何密钥。',
+          '<select class="sel" data-change="bind"><option value="127.0.0.1"' + (s.bind === '127.0.0.1' ? ' selected' : '') + '>127.0.0.1</option>'
+          + '<option value="0.0.0.0"' + (s.bind === '0.0.0.0' ? ' selected' : '') + '>0.0.0.0（局域网）</option></select>')
+      + setRow('请求鉴权', '关闭时任何能访问该端口的设备都能调用。改成 0.0.0.0 时应用会问你要不要加一道钥匙。',
+          '<button class="switch" type="button" role="switch" data-act="toggle-auth" aria-checked="' + (s.auth ? 'true' : 'false') + '" aria-label="请求鉴权"></button>')
+      + setRow('客户端接入', '复制一段配置贴进你的客户端。',
+          '<button class="btn" type="button" data-act="copy-client">复制 base_url</button>')
+    + '</section>';
+
+  const data =
+    '<section class="sheet">' + sheetHead('DATA', '数据与日志')
+      + setRow('日志保留', '实例的 stdout / stderr 保留时长，超期自动清理。',
+          '<select class="sel" data-change="logdays">' + [7,14,30,90].map(function(n){ return '<option value="' + n + '"' + (s.logDays === n ? ' selected' : '') + '>' + n + ' 天</option>'; }).join('') + '</select>')
+      + setRow('本地自动保存', '模型索引、服务、下载队列、运行时版本、设置与界面状态自动写入浏览器本地存储，刷新或重启后原样恢复。',
+          '<span class="mono" style="font-size:11.5px;color:var(--ink-3)">' + esc(storeInfo()) + '</span>')
+      + setRow('导出配置', '导出一份 JSON，含模型索引、运行时版本与网关设置，可在另一台机器导入。',
+          '<button class="btn" type="button" data-act="export">导出 JSON</button>')
+      + setRow('恢复出厂设置', '清空全部索引与设置，并删除浏览器里的本地存档。磁盘上的模型文件不会被删除。',
+          '<button class="btn btn--danger" type="button" data-act="reset">重置</button>')
+    + '</section>';
+
+  const appearance =
+    '<section class="sheet">' + sheetHead('APPEARANCE', '外观')
+      + setRow('主题', state.settings.theme === '跟随系统' ? '跟随系统 · 当前生效：' + (isDark() ? '深色' : '浅色') : '已固定为' + state.settings.theme,
+          '<select class="sel" data-change="theme">' + ['跟随系统','浅色','深色'].map(function(t){ return '<option' + (s.theme === t ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select>')
+      + setRow('关于', 'LM Lathe · 原型 v2 · 纯本地，不接入云端 API。',
+          '<span class="mono" style="font-size:11.5px;color:var(--ink-3)">v2.0</span>')
+    + '</section>';
+
+  return storage + gateway + data + appearance;
+}
+</script>
+<script>
+"use strict";
+
+let insp = null;
+let modalState = null;
+
+/* ============================ inspector ============================ */
+function verCmp(a, b){
+  const na = String(a).match(/\d+/g) || ['0'], nb = String(b).match(/\d+/g) || ['0'];
+  for(let i = 0; i < Math.max(na.length, nb.length); i++){
+    const x = Number(na[i] || 0), y = Number(nb[i] || 0);
+    if(x !== y) return x > y ? 1 : -1;
+  }
+  return 0;
+}
+function compatibleRuntimes(m){
+  if(!m) return [];
+  return RUNTIMES.filter(function(r){
+    if(!r.installed) return false;
+    if(m.format === 'GGUF') return r.id === 'llamacpp';
+    if(m.format === 'MLX') return r.id === 'mlx';
+    if(m.format === 'Safetensors') return r.id === 'sglang';
+    return false;
+  });
+}
+function compatRows(m){
+  const rt = RUNTIMES.filter(function(r){ return r.id === m.runtime; })[0];
+  const rows = [];
+  if(m.format === 'GGUF') rows.push({ dim:'格式兼容', ok:true, res:'GGUF 权重，' + (rt ? rt.name : 'llama.cpp') + ' 原生支持' });
+  else if(m.format === 'MLX') rows.push({ dim:'格式兼容', ok:true, res:'MLX 量化权重，仅 MLX 运行时可加载' });
+  else rows.push({ dim:'格式兼容', ok:false, res:'Safetensors 原始权重，需要先转换为 GGUF' });
+  const capOk = !!rt && rt.types.indexOf(m.type) !== -1;
+  rows.push({ dim:'能力兼容', ok:capOk, res: rt ? (capOk ? rt.name + ' 声明支持 ' + m.type : rt.name + ' 未声明 ' + m.type + ' 能力') : '尚未绑定运行时' });
+  rows.push({ dim:'硬件兼容', ok:m.vram <= 24, res:'估算占用 ' + fmt(m.vram) + ' GB，可用 24 GB' });
+  const verOk = !!rt && verCmp(rt.version, rt.minVersion) >= 0;
+  rows.push({ dim:'版本兼容', ok:verOk, res: rt ? rt.name + ' ' + rt.version + '，要求 ≥ ' + rt.minVersion : '尚未绑定运行时' });
+  return rows;
+}
+function inspHead(ey, title, sub){
+  return '<div class="insp__head"><span class="cellstack">'
+    + '<span class="eyebrow">' + esc(ey) + '</span>'
+    + '<span class="insp__title">' + esc(title) + '</span>'
+    + (sub ? '<span class="insp__sub">' + esc(sub) + '</span>' : '')
+    + '</span><button class="btn btn--icon insp__x" type="button" data-act="close-insp" aria-label="关闭">' + icon('x') + '</button></div>';
+}
+function inspTabs(items){
+  return '<div class="insp__tabs">' + items.map(function(t){
+      return '<button type="button" data-act="insp-tab" data-tab="' + t[0] + '" aria-selected="' + (insp.tab === t[0]) + '">' + t[1] + '</button>';
+    }).join('') + '</div>';
+}
+function matrix(rows){
+  return '<div class="matrix">' + rows.map(function(r){
+      return '<div class="matrix__row"><span class="matrix__k">' + esc(r.dim) + '</span>'
+        + '<span class="matrix__v">' + (r.ok ? tagOf('ok','通过') : tagOf('bad','不通过'))
+        + '<span class="matrix__why">' + esc(r.res) + '</span></span></div>';
+    }).join('') + '</div>';
+}
+function inspHTML(){
+  if(!insp) return '';
+  const k = insp.kind;
+
+  if(k === 'notes'){
+    const n = NOTES[state.view] || { title:state.view, lead:'', points:[], nots:'' };
+    return inspHead('DESIGN NOTE', n.title + ' · 设计说明', 'WHY THIS PAGE EXISTS')
+      + '<div class="insp__body">'
+        + '<div class="note"><h4>目的</h4><p>' + esc(n.lead) + '</p></div>'
+        + '<div class="note"><h4>关键取舍</h4><ul>' + n.points.map(function(p){ return '<li>' + esc(p) + '</li>'; }).join('') + '</ul></div>'
+        + '<div class="note" data-tone="warn"><h4>明确不做</h4><p>' + esc(n.nots) + '</p></div>'
+      + '</div>';
+  }
+
+  if(k === 'catalog'){
+    const m = CATALOG.filter(function(x){ return x.id === insp.id; })[0];
+    if(!m) return '';
+    const rts = RUNTIMES.filter(function(r){
+      return (m.format === 'GGUF' && r.id === 'llamacpp') || (m.format === 'MLX' && r.id === 'mlx') || (m.format === 'Safetensors' && r.id === 'sglang');
+    });
+    return inspHead('CATALOG · ' + m.type, m.name, m.repo)
+      + '<div class="insp__body">'
+        + '<div class="cellstack"><span style="font-size:12.5px;color:var(--ink-2)">' + esc(m.desc) + '</span></div>'
+        + '<div class="cellrow">' + tagOf(m.type === 'LLM' ? 'llm' : 'tts', m.type) + '<span class="tag tag--idle">' + esc(m.format) + '</span><span class="tag tag--idle">' + esc(m.quant) + '</span></div>'
+        + '<div class="kv">'
+          + kv('参数量', esc(m.params), true) + kv('文件大小', fmt(m.size) + ' GB', true)
+          + kv('下载量', esc(m.downloads), true) + kv('最近更新', esc(m.updated))
+          + kv('许可证', esc(m.license), true)
+        + '</div>'
+        + '<div class="cellstack"><span class="eyebrow">可用运行时</span>'
+          + rts.map(function(r){
+              return '<span class="matrix__row"><span class="matrix__k">' + esc(r.name) + '</span>'
+                + '<span class="matrix__v">' + (r.installed ? tagOf('ok','v' + r.version) : tagOf('idle','未安装')) + '</span></span>';
+            }).join('')
+        + '</div>'
+      + '</div>'
+      + '<div class="insp__foot"><button class="btn btn--primary" type="button" data-act="download" data-id="' + m.id + '">' + icon('download') + '下载到本地</button></div>';
+  }
+
+  if(k === 'local'){
+    const m = state.models.filter(function(x){ return x.id === insp.id; })[0];
+    if(!m) return '';
+    const rt = RUNTIMES.filter(function(r){ return r.id === m.runtime; })[0];
+    const tabs = [['overview','概览'],['compat','能力与兼容'],['usage','用量'],['files','文件']];
+    let body = '';
+    if(insp.tab === 'overview'){
+      body = '<div class="cellstack"><span style="font-size:12.5px;color:var(--ink-2)">' + esc(m.desc) + '</span></div>'
+        + '<div class="cellrow">' + tagOf(m.type === 'LLM' ? 'llm' : 'tts', m.type) + '<span class="tag tag--idle">' + esc(m.format) + '</span>' + statusTag(m.status) + '</div>'
+        + '<div class="kv">'
+          + kv('仓库', esc(m.repo), true) + kv('参数量', esc(m.params))
+          + kv('磁盘占用', fmt(m.size) + ' GB', true) + kv('显存估算', fmt(m.vram) + ' GB', true)
+          + kv('运行时', rt ? esc(rt.name) : '未绑定') + kv('安装时间', esc(m.installed))
+          + kv('路径', '…/models/' + m.format.toLowerCase() + '/' + esc(m.name), true)
+        + '</div>';
+    } else if(insp.tab === 'compat'){
+      body = matrix(compatRows(m))
+        + '<div class="note"><h4>说明</h4><p>四个维度分别判定，不通过时逐项给出原因，而不是一个笼统的「不兼容」。</p></div>';
+    } else if(insp.tab === 'usage'){
+      const used = state.services.filter(function(s){ return s.modelId === m.id; });
+      body = used.length
+        ? '<div class="kv">'
+            + kv('首次使用', esc(m.installed)) + kv('最近使用', esc(m.used))
+            + kv('累计请求', used.map(function(s){ return esc(s.reqs); }).join(' / '), true)
+          + '</div>'
+          + '<div class="cellstack"><span class="eyebrow">关联服务 · 启停在这里</span>'
+          + used.map(function(s){
+              return '<div class="cellrow" style="justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:9px 0">'
+                + '<span class="cellstack" style="gap:2px"><span class="name" style="font-size:12.5px;font-weight:600">' + esc(s.name) + '</span>'
+                  + '<span class="sub">端口 ' + s.port + ' · ' + esc(runtimeName(s.runtime)) + '</span></span>'
+                + '<span class="cellrow">'
+                  + statusTag(s.status)
+                  + (s.status === 'running'
+                      ? '<button class="btn btn--icon" type="button" data-act="svc-restart" data-id="' + s.id + '" aria-label="重启" title="重启">' + icon('refresh') + '</button>'
+                        + '<button class="btn btn--icon" type="button" data-act="svc-stop" data-id="' + s.id + '" aria-label="停止" title="停止">' + icon('stop') + '</button>'
+                      : '<button class="btn btn--icon" type="button" data-act="svc-start" data-id="' + s.id + '" aria-label="启动" title="启动">' + icon('play') + '</button>')
+                + '</span></div>';
+            }).join('')
+          + '</div>'
+        : '<div class="empty"><span class="empty__title">还没有使用记录</span>'
+          + '<span class="empty__text">创建服务并处理过请求之后，这里会显示首次与最近使用时间。</span></div>';
+    } else {
+      body = '<div class="kv">' + m.files.map(function(f){
+          return kv(f[0], fmt(f[1], 2) + ' GB', true);
+        }).join('') + '</div>';
+    }
+    const canServe = m.status === 'ready';
+    return inspHead('LOCAL · ' + m.type, m.name, m.repo)
+      + inspTabs(tabs)
+      + '<div class="insp__body">' + body + '</div>'
+      + '<div class="insp__foot">'
+        + '<button class="btn" type="button" data-act="open-folder" data-id="' + m.id + '">' + icon('folder') + '打开目录</button>'
+        + (canServe
+            ? '<button class="btn btn--primary" type="button" data-act="create-service" data-id="' + m.id + '">' + icon('play') + '创建服务</button>'
+            : '<button class="btn" type="button" disabled>' + icon('play') + '创建服务</button>')
+      + '</div>';
+  }
+
+  if(k === 'service'){
+    const s = state.services.filter(function(x){ return x.id === insp.id; })[0];
+    if(!s) return '';
+    const m = state.models.filter(function(x){ return x.id === s.modelId; })[0];
+    const tabs = [['overview','概览'],['logs','日志']];
+    let body = '';
+    if(insp.tab === 'logs'){
+      body = '<div class="term" id="insp-log">' + (s.logs.length ? s.logs.join('') : '<span class="term__line">暂无日志输出</span>') + '</div>';
+    } else {
+      body = '<div class="cellrow">' + typeMark(s.type) + statusTag(s.status) + '</div>'
+        + '<div class="kv">'
+          + kv('模型', esc(s.model)) + kv('运行时', esc(runtimeName(s.runtime)), true)
+          + kv('端口', String(s.port), true) + kv('显存', s.vram ? fmt(s.vram) + ' GB' : '—', true)
+          + kv('累计请求', esc(s.reqs), true) + kv('平均延迟', esc(s.latency), true)
+          + kv('启动于', s.startedAt ? esc(s.startedAt) : '—', true)
+        + '</div>'
+        + (s.error ? '<div class="note" data-tone="bad"><h4>上次失败</h4><p>' + esc(s.error) + '</p></div>' : '')
+        + (m ? '<div class="cellrow"><button class="btn" type="button" data-act="goto-local" data-id="' + m.id + '">' + icon('cube') + '打开模型</button>'
+            + '<span class="sub">启停与重启在模型详情的「用量」里</span></div>' : '')
+        + '<div class="note"><h4>接入方式</h4><p class="mono">POST http://127.0.0.1:' + s.port + '/v1/chat/completions</p></div>';
+    }
+    return inspHead('SERVICE · ' + s.type, s.name, s.model)
+      + inspTabs(tabs)
+      + '<div class="insp__body">' + body + '</div>'
+      + '<div class="insp__foot">'
+        + '<button class="btn btn--primary" type="button" data-act="svc-logs" data-id="' + s.id + '">' + icon('terminal') + '查看日志</button>'
+      + '</div>';
+  }
+}
+
+function paintInsp(){
+  const el = document.getElementById('insp');
+  const app = document.getElementById('app');
+  if(!insp){
+    el.hidden = true;
+    el.innerHTML = '';
+    app.classList.remove('has-insp');
+    return;
+  }
+  el.hidden = false;
+  app.classList.add('has-insp');
+  el.innerHTML = inspHTML();
+}
+
+/* ============================ modal ============================ */
+function nextPort(m){
+  const base = m && m.format === 'MLX' ? 8020 : (m && m.format === 'Safetensors' ? 30000 : 8080);
+  const used = state.services.map(function(s){ return s.port; });
+  let p = base;
+  while(used.indexOf(p) !== -1 || p === 7800) p++;
+  return p;
+}
+function openModal(kind, payload){
+  modalState = { kind:kind, payload:payload };
+  const m = document.getElementById('modal');
+  m.innerHTML = modalHTML();
+  if(!m.open) m.showModal();
+  requestAnimationFrame(function(){
+    const f = m.querySelector('[data-autofocus]') || m.querySelector('input,select,button');
+    if(f) f.focus();
+  });
+}
+function closeModal(){
+  const m = document.getElementById('modal');
+  if(m.open) m.close();
+  modalState = null;
+}
+function modalHTML(){
+  const k = modalState.kind, p = modalState.payload;
+  if(k === 'create-service'){
+    const m = state.models.filter(function(x){ return x.id === p; })[0];
+    const rts = compatibleRuntimes(m);
+    const port = nextPort(m);
+    return '<div class="dlg__head"><span class="eyebrow">NEW SERVICE</span><span class="dlg__title">为 ' + esc(m.name) + ' 创建服务</span></div>'
+      + '<div class="dlg__body">'
+      + '<div class="field"><label class="field__label" for="svc-name">服务名称</label>'
+      + '<input class="input" id="svc-name" data-autofocus value="' + esc(m.name + '-' + (m.type === 'TTS' ? 'TTS' : 'Chat')) + '">'
+      + '<span class="field__hint">用于在网关里标识这条路由</span><span class="field__error" id="err-svc-name" hidden></span></div>'
+      + '<div class="field"><label class="field__label" for="svc-rt">运行时</label>'
+      + (rts.length
+          ? '<select class="input" id="svc-rt">' + rts.map(function(r){ return '<option value="' + r.id + '">' + esc(r.name) + ' · v' + esc(r.version) + '</option>'; }).join('') + '</select>'
+          : '<div class="note" data-tone="warn"><h4>没有可用运行时</h4><p>这个模型格式没有已安装且兼容的运行时。</p></div>')
+      + '<span class="field__hint">只列出与该模型格式兼容的已安装运行时</span></div>'
+      + '<div class="field"><label class="field__label" for="svc-port">端口</label>'
+      + '<input class="input" id="svc-port" inputmode="numeric" value="' + port + '">'
+      + '<span class="field__hint">全局唯一，被占用时不能提交</span><span class="field__error" id="err-svc-port" hidden></span></div>'
+      + '</div>'
+      + '<div class="dlg__foot"><button class="btn" type="button" data-act="modal-close">取消</button>'
+      + '<button class="btn btn--primary" type="button" data-act="modal-confirm" data-kind="create-service" data-id="' + m.id + '"' + (rts.length ? '' : ' disabled') + '>创建并启动</button></div>';
+  }
+  if(k === 'delete-model'){
+    const m = state.models.filter(function(x){ return x.id === p; })[0];
+    const used = state.services.filter(function(s){ return s.modelId === p; });
+    return '<div class="dlg__head"><span class="eyebrow">DELETE</span><span class="dlg__title">删除模型</span></div>'
+      + '<div class="dlg__body">'
+      + '<div class="note" data-tone="bad"><h4>不可撤销</h4><p>删除 <b>' + esc(m.name) + '</b> 会从磁盘移除权重，释放 <b>' + fmt(m.size) + ' GB</b>。</p>'
+      + (used.length ? '<p>正在使用它的服务：<b>' + used.map(function(s){ return esc(s.name); }).join('、') + '</b>，会一并停止。</p>' : '')
+      + '</div>'
+      + '<span class="field__hint">只想从列表里移除但保留文件，用下面的「仅从索引移除」；它同样会停止引用它的服务。</span>'
+      + '</div>'
+      + '<div class="dlg__foot"><button class="btn" type="button" data-act="modal-close">取消</button>'
+      + '<button class="btn" type="button" data-act="modal-confirm" data-kind="unindex" data-id="' + m.id + '">仅从索引移除</button>'
+      + '<button class="btn btn--danger" type="button" data-act="modal-confirm" data-kind="delete-model" data-id="' + m.id + '">删除并释放空间</button></div>';
+  }
+  if(k === 'version'){
+    const r = RUNTIMES.filter(function(x){ return x.id === p; })[0];
+    return '<div class="dlg__head"><span class="eyebrow">VERSION</span><span class="dlg__title">切换 ' + esc(r.name) + ' 的版本</span></div>'
+      + '<div class="dlg__body"><div class="verlist">'
+      + r.versions.map(function(v){
+          const cur = v === r.version;
+          const old = verCmp(v, r.minVersion) < 0;
+          return '<label class="ver"><input type="radio" name="ver" value="' + esc(v) + '"' + (cur ? ' checked' : '') + '>'
+            + '<span>' + esc(v) + '</span>'
+            + '<span class="ver__tag">' + (old ? tagOf('warn','低于 ' + r.minVersion) : (cur ? tagOf('ok','当前版本') : tagOf('idle','可安装'))) + '</span></label>';
+        }).join('')
+      + '</div>'
+      + '<div class="note" data-tone="warn"><h4>兼容性影响</h4><p>切到低于 ' + esc(r.minVersion) + ' 的版本，依赖它的模型会变成「缺运行时」，相关服务立刻不可用。</p></div></div>'
+      + '<div class="dlg__foot"><button class="btn" type="button" data-act="modal-close">取消</button>'
+      + '<button class="btn btn--primary" type="button" data-act="modal-confirm" data-kind="version" data-id="' + r.id + '">应用版本</button></div>';
+  }
+  if(k === 'install'){
+    const r = RUNTIMES.filter(function(x){ return x.id === p; })[0];
+    const cmd = r.channel === '二进制' ? 'brew install llama.cpp' : ('python -m venv ' + r.path + ' && ' + r.path + '/bin/pip install ' + r.id);
+    return '<div class="dlg__head"><span class="eyebrow">INSTALL</span><span class="dlg__title">安装 ' + esc(r.name) + ' ' + esc(r.available || r.version) + '</span></div>'
+      + '<div class="dlg__body">'
+      + '<div class="kv">' + kv('来源', 'github.com/' + (r.id === 'mlx' ? 'ml-explore/mlx-lm' : r.id === 'llamacpp' ? 'ggml-org/llama.cpp' : 'sgl-project/sglang'), true)
+        + kv('磁盘需求', r.id === 'llamacpp' ? '1.2 GB' : r.id === 'mlx' ? '2.4 GB' : '8.6 GB', true)
+        + kv('安装方式', esc(r.channel)) + '</div>'
+      + '<div class="field"><span class="field__label">将执行的命令</span><pre class="code">' + esc(cmd) + '</pre></div>'
+      + '<div class="note"><h4>说明</h4><p>安装过程实时输出日志，不做静默执行。</p></div>'
+      + '</div>'
+      + '<div class="dlg__foot"><button class="btn" type="button" data-act="modal-close">取消</button>'
+      + '<button class="btn btn--primary" type="button" data-act="modal-confirm" data-kind="install" data-id="' + r.id + '">开始安装</button></div>';
+  }
+  if(k === 'expose'){
+    return '<div class="dlg__head"><span class="eyebrow">EXPOSURE</span><span class="dlg__title">暴露到局域网</span></div>'
+      + '<div class="dlg__body">'
+      + '<div class="note" data-tone="warn"><h4>监听地址改变</h4><p>改为 0.0.0.0 后，局域网内的其他设备都能访问这个网关。</p></div>'
+      + '<div class="field"><span class="field__label">是否启用鉴权</span><div class="radios">'
+      + '<label class="radio"><input type="radio" name="authmode" value="on"><span><span class="radio__title">启用鉴权</span>'
+      + '<span class="radio__desc">创建 API Key，客户端需要带 Bearer Token</span></span></label>'
+      + '<label class="radio"><input type="radio" name="authmode" value="off" checked><span><span class="radio__title">不启用</span>'
+      + '<span class="radio__desc">局域网内任何设备都可以直接调用</span></span></label>'
+      + '</div></div></div>'
+      + '<div class="dlg__foot"><button class="btn" type="button" data-act="modal-close">取消</button>'
+      + '<button class="btn btn--primary" type="button" data-act="modal-confirm" data-kind="expose">确认</button></div>';
+  }
+  if(k === 'export'){
+    const data = { models:state.models.map(function(m){ return { name:m.name, repo:m.repo, type:m.type, format:m.format, quant:m.quant }; }), settings:state.settings };
+    return '<div class="dlg__head"><span class="eyebrow">EXPORT</span><span class="dlg__title">导出的配置</span></div>'
+      + '<div class="dlg__body"><pre class="code">' + esc(JSON.stringify(data, null, 2)) + '</pre></div>'
+      + '<div class="dlg__foot"><button class="btn" type="button" data-act="modal-close">关闭</button></div>';
+  }
+  if(k === 'reset'){
+    return '<div class="dlg__head"><span class="eyebrow">RESET</span><span class="dlg__title">恢复出厂设置</span></div>'
+      + '<div class="dlg__body">'
+      + '<div class="note" data-tone="bad"><h4>清空全部索引</h4><p>模型索引、运行时记录、服务配置与设置都会被清空。磁盘上的权重文件不会被删除。</p></div>'
+      + '<div class="field"><label class="field__label" for="reset-word">输入 RESET 以确认</label>'
+      + '<input class="input" id="reset-word" data-autofocus placeholder="RESET"><span class="field__error" id="err-reset" hidden>输入不一致，未执行。</span></div>'
+      + '</div>'
+      + '<div class="dlg__foot"><button class="btn" type="button" data-act="modal-close">取消</button>'
+      + '<button class="btn btn--danger" type="button" data-act="modal-confirm" data-kind="reset">确认重置</button></div>';
+  }
+  return '';
+}
+
+/* ============================ actions ============================ */
+function toast(msg, tone){
+  const t = document.getElementById('toasts');
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.setAttribute('data-tone', tone || 'info');
+  el.innerHTML = icon(tone === 'ok' ? 'check' : tone === 'bad' ? 'alert' : 'info') + '<span>' + esc(msg) + '</span>';
+  t.appendChild(el);
+  setTimeout(function(){
+    el.style.opacity = '0';
+    el.style.transition = 'opacity .2s ease';
+    setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); }, 220);
+  }, 3200);
+}
+function nowTime(){
+  const d = new Date();
+  return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+}
+function logLine(text){
+  const d = new Date();
+  const ts = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
+  return '<span class="term__line">[' + ts + '] ' + text + '</span>';
+}
+function startDownload(catalogId){
+  const m = CATALOG.filter(function(x){ return x.id === catalogId; })[0];
+  if(!m) return;
+  if(state.queue.some(function(q){ return q.repo === m.repo; })){ toast('「' + m.name + '」已经在下载队列里','info'); return; }
+  state.queue.push({ id:'q' + (state.queue.length + 1) + '_' + m.id, name:m.name, repo:m.repo, type:m.type, format:m.format,
+    size:m.size, pct:0, speed:4 + Math.random() * 9, status:'downloading' });
+  EVENTS.unshift({ tone:'info', time:'刚刚', text:'开始下载 ' + m.name + '（' + fmt(m.size) + ' GB）' });
+  insp = null;
+  state.view = 'models';
+  state.modelTab = 'local';
+  render();
+  toast('已加入下载队列：' + m.name,'info');
+}
+function finishDownload(q){
+  const m = {
+    id:'lm' + q.id, name:q.name, repo:q.repo, type:q.type, format:q.format,
+    quant: q.format === 'GGUF' ? 'Q4_K_M' : (q.format === 'MLX' ? '4bit' : 'FP16'),
+    size:q.size, vram: q.type === 'TTS' ? 1.2 : q.size * 1.3, params:'—',
+    status: q.format === 'Safetensors' ? 'convert' : 'ready',
+    runtime: q.format === 'GGUF' ? 'llamacpp' : (q.format === 'MLX' ? 'mlx' : null),
+    used:'从未使用', installed:'2026-11-03', license:'apache-2.0',
+    desc:'刚刚从 Hugging Face 下载完成。', files:[['model.safetensors', q.size]]
+  };
+  state.models.push(m);
+  state.recent.push(m.id);
+  EVENTS.unshift({ tone:'ok', time:'刚刚', text:'已下载 ' + q.name + '（' + fmt(q.size) + ' GB）' });
+  render();
+  toast(q.name + ' 下载完成，已加入本地模型','ok');
+}
+function detachModel(id){
+  const affected = state.services.filter(function(s){ return s.modelId === id; });
+  affected.forEach(function(s){
+    s.status = 'failed'; s.error = '模型已从本机移除，该服务无法继续运行';
+    s.vram = 0; s.reqs = '—'; s.latency = '—'; s.startedAt = null; s.health = 0;
+  });
+  state.models = state.models.filter(function(x){ return x.id !== id; });
+  if(affected.length){
+    EVENTS.unshift({ tone:'warn', time:'刚刚', text:'移除模型后停止 ' + affected.map(function(s){ return s.name; }).join('、') });
+  }
+  return affected;
+}
+function toggleService(id, op){
+  const s = state.services.filter(function(x){ return x.id === id; })[0];
+  if(!s) return;
+  const m = state.models.filter(function(x){ return x.id === s.modelId; })[0];
+  const rt = RUNTIMES.filter(function(r){ return r.id === s.runtime; })[0];
+  if(op === 'stop'){
+    s.status = 'stopped'; s.vram = 0; s.reqs = '—'; s.startedAt = null; s.health = 0;
+    EVENTS.unshift({ tone:'warn', time:'刚刚', text:'服务 ' + s.name + ' 已手动停止' });
+    render(); toast('服务 ' + s.name + ' 已停止','info'); return;
+  }
+  if(op === 'restart'){
+    s.status = 'stopped'; render();
+    setTimeout(function(){ toggleService(id, 'start'); }, 500); return;
+  }
+  if(rt && !rt.installed){
+    s.status = 'failed'; s.error = '运行时 ' + rt.name + ' 未安装，无法加载此模型';
+    EVENTS.unshift({ tone:'bad', time:'刚刚', text:'服务 ' + s.name + ' 启动失败：运行时未安装' });
+    render(); toast(s.name + ' 启动失败：缺少 ' + rt.name,'bad'); return;
+  }
+  if(m && m.status !== 'ready'){
+    s.status = 'failed';
+    s.error = m.status === 'convert' ? '模型格式未转换，运行时无法加载 Safetensors 权重' : '模型状态异常：' + m.status;
+    EVENTS.unshift({ tone:'bad', time:'刚刚', text:'服务 ' + s.name + ' 启动失败' });
+    render(); toast(s.name + ' 启动失败','bad'); return;
+  }
+  s.status = 'starting'; s.error = null;
+  render();
+  toast('正在启动 ' + s.name + '…','info');
+  setTimeout(function(){
+    s.status = 'running'; s.startedAt = nowTime(); s.vram = m ? m.vram : 0; s.reqs = '0'; s.health = 97; s.logs = [];
+    s.logs.push(logLine('<b>INFO</b> ' + (rt ? rt.name : '运行时') + ' 正在载入 ' + (m ? m.name : '模型')));
+    s.logs.push(logLine('<b>INFO</b> 载入完成，监听 http://127.0.0.1:' + s.port));
+    EVENTS.unshift({ tone:'ok', time:'刚刚', text:'服务 ' + s.name + ' 启动成功' });
+    render(); toast(s.name + ' 已运行','ok');
+  }, 2400);
+}
+function submitCreateService(){
+  const m = state.models.filter(function(x){ return x.id === modalState.payload; })[0];
+  const nameEl = document.getElementById('svc-name');
+  const rtEl = document.getElementById('svc-rt');
+  const portEl = document.getElementById('svc-port');
+  const nameErr = document.getElementById('err-svc-name');
+  const portErr = document.getElementById('err-svc-port');
+  nameErr.hidden = true; portErr.hidden = true;
+  const name = nameEl.value.trim();
+  const portRaw = portEl.value.trim();
+  const port = Number(portRaw);
+  let ok = true;
+  if(!name){ nameErr.hidden = false; nameErr.textContent = '请填写服务名称'; ok = false; }
+  if(!portRaw || !Number.isInteger(port) || port < 1024 || port > 65535){
+    portErr.hidden = false; portErr.textContent = '端口需要是 1024–65535 之间的整数'; ok = false;
+  } else if(port === 7800){
+    portErr.hidden = false; portErr.textContent = '7800 是网关端口，请换一个'; ok = false;
+  } else {
+    const clash = state.services.filter(function(s){ return s.port === port; })[0];
+    if(clash){ portErr.hidden = false; portErr.textContent = '端口 ' + port + ' 已被「' + clash.name + '」占用'; ok = false; }
+  }
+  if(!ok){ (nameErr.hidden ? portEl : nameEl).focus(); return; }
+  const rtId = rtEl ? rtEl.value : 'llamacpp';
+  const svc = { id:'s' + (state.services.length + 1) + '_' + Date.now().toString().slice(-4), name:name, model:m.name, modelId:m.id,
+    runtime:rtId, type:m.type, port:port, status:'starting', startedAt:null, reqs:'0', latency:'—', vram:0, health:0, logs:[] };
+  state.services.push(svc);
+  closeModal();
+  state.view = 'services';
+  insp = { kind:'service', id:svc.id, tab:'overview' };
+  render();
+  toast('服务 ' + name + ' 正在启动…','info');
+  setTimeout(function(){
+    svc.status = 'running'; svc.startedAt = nowTime(); svc.vram = m.vram; svc.health = 97;
+    svc.logs.push(logLine('<b>INFO</b> ' + runtimeName(rtId) + ' 已就绪，监听 127.0.0.1:' + port));
+    svc.logs.push(logLine('<b>INFO</b> 载入 ' + m.name + '，耗时 4.2s'));
+    EVENTS.unshift({ tone:'ok', time:'刚刚', text:'服务 ' + name + ' 启动成功' });
+    render(); toast(name + ' 已运行','ok');
+  }, 2400);
+}
+function applyVersion(rtId, ver){
+  const r = RUNTIMES.filter(function(x){ return x.id === rtId; })[0];
+  const old = r.version;
+  r.version = ver;
+  state.models.forEach(function(m){
+    if(m.runtime !== rtId) return;
+    const ok = verCmp(ver, r.minVersion) >= 0;
+    if(!ok && m.status === 'ready') m.status = 'noruntime';
+    else if(ok && m.status === 'noruntime') m.status = 'ready';
+  });
+  EVENTS.unshift({ tone:'info', time:'刚刚', text:'运行时 ' + r.name + ' 已从 ' + old + ' 切换到 ' + ver });
+  closeModal();
+  render();
+  const low = verCmp(ver, r.minVersion) < 0;
+  toast(r.name + ' 已切换到 ' + ver + (low ? '，低于最低要求，相关模型已标记为缺运行时' : ''), low ? 'bad' : 'ok');
+}
+function startInstall(rtId){
+  const r = RUNTIMES.filter(function(x){ return x.id === rtId; })[0];
+  closeModal();
+  r.installPct = 1;
+  render();
+  const iv = setInterval(function(){
+    r.installPct += 7 + Math.round(Math.random() * 9);
+    if(r.installPct >= 100){
+      r.installPct = 0;
+      r.installed = true;
+      r.version = r.available || r.versions[0];
+      EVENTS.unshift({ tone:'ok', time:'刚刚', text:'运行时 ' + r.name + ' 安装完成（v' + r.version + '）' });
+      clearInterval(iv);
+      render();
+      toast(r.name + ' 安装完成','ok');
+    } else {
+      render();
+    }
+  }, 420);
+}
+
+/* ============================ render ============================ */
+const VIEWS = {
+  models:viewModels,
+  runtime:viewRuntime,
+  services:viewServices,
+  settings:viewSettings
+};
+function render(){
+  const ae = document.activeElement;
+  let sel = null;
+  if(ae && ae.getAttribute){
+    const act = ae.getAttribute('data-act');
+    const dk = ae.getAttribute('data-key');
+    const di = ae.getAttribute('data-input');
+    const did = ae.getAttribute('data-id');
+    if(di) sel = '[data-input="' + di + '"]';
+    else if(act && dk) sel = '[data-act="' + act + '"][data-key="' + dk + '"]';
+    else if(act && did) sel = '[data-act="' + act + '"][data-id="' + did + '"]';
+    else if(act) sel = '[data-act="' + act + '"]';
+    if(sel && ae.id) sel = '#' + ae.id;
+  }
+  const pos = ae && typeof ae.selectionStart === 'number' ? ae.selectionStart : null;
+  const scroller = document.getElementById('viewscroll');
+  const top = scroller ? scroller.scrollTop : 0;
+
+  renderNav();
+  const view = document.getElementById('view');
+  view.innerHTML = (VIEWS[state.view] || viewModels)();
+  document.getElementById('pg-title').textContent = state.view === 'models'
+    ? (state.modelTab === 'discover' ? '发现模型' : '已下载模型') : PAGES[state.view].title;
+  document.getElementById('pg-sub').textContent = state.view === 'models'
+    ? (state.modelTab === 'discover' ? 'DISCOVER' : 'ON DISK') : PAGES[state.view].sub;
+  document.getElementById('pg-tools').innerHTML = toolsFor(state.view);
+  paintInsp();
+
+  if(scroller) scroller.scrollTop = top;
+  if(sel){
+    const el = document.querySelector(sel);
+    if(el && el.focus){
+      el.focus({preventScroll:true});
+      if(pos !== null && el.setSelectionRange && el.type !== 'number'){
+        try{ el.setSelectionRange(pos, pos); }catch(err){}
+      }
+    }
+  }
+  writeStore();
+}
+
+/* ============================ events ============================ */
+document.addEventListener('click', function(e){
+  const modalEl = document.getElementById('modal');
+  if(modalEl && e.target === modalEl){ closeModal(); return; }
+  const t = e.target.closest('[data-act]');
+  if(!t) return;
+  const act = t.getAttribute('data-act');
+  const id = t.getAttribute('data-id');
+  const val = t.getAttribute('data-val');
+  const tab = t.getAttribute('data-tab');
+
+  switch(act){
+    case 'nav':
+      state.view = t.getAttribute('data-view');
+      insp = null;
+      render(); return;
+    case 'goto-settings':
+      state.view = 'settings'; insp = null; render(); return;
+    case 'notes':
+      insp = { kind:'notes' }; render(); return;
+    case 'close-insp':
+      insp = null; render(); return;
+    case 'insp-tab':
+      if(insp) insp.tab = tab;
+      render(); return;
+    case 'pick-catalog':
+      insp = { kind:'catalog', id:id }; render(); return;
+    case 'pick-local':
+      insp = { kind:'local', id:id, tab:'overview' }; render(); return;
+    case 'pick-service':
+      insp = { kind:'service', id:id, tab:'overview' }; render(); return;
+    case 'pick-runtime':
+      insp = { kind:'runtime', id:id }; render(); return;
+    case 'svc-logs':
+      insp = { kind:'service', id:id, tab:'logs' }; render(); return;
+    case 'model-tab':
+      state.modelTab = tab; insp = null; render(); return;
+    case 'goto-local':
+      state.modelTab = 'local';
+      insp = { kind:'local', id:id, tab:'overview' };
+      render(); return;
+    case 'dfilter':
+      state.discover[t.getAttribute('data-key')] = val;
+      document.getElementById('discover-results').innerHTML = discoverTable();
+      document.querySelectorAll('[data-act="dfilter"][data-key="' + t.getAttribute('data-key') + '"]').forEach(function(b){
+        b.setAttribute('aria-pressed', b.getAttribute('data-val') === val ? 'true' : 'false');
+      });
+      return;
+    case 'lfilter':
+      state.local[t.getAttribute('data-key')] = val; render(); return;
+    case 'clear-discover':
+      state.discover = { q:'', type:'all', format:'all', installed:'all', sort:state.discover.sort }; render(); return;
+    case 'download':
+      startDownload(id); return;
+    case 'cancel-download':
+      state.queue = state.queue.filter(function(q){ return q.id !== id; }); render(); return;
+    case 'create-service':
+      openModal('create-service', id); return;
+    case 'delete-model':
+      openModal('delete-model', id); return;
+    case 'open-folder':
+      toast('已在访达中打开模型目录','info'); return;
+    case 'svc-start':
+      toggleService(id, 'start'); return;
+    case 'svc-stop':
+      toggleService(id, 'stop'); return;
+    case 'svc-restart':
+      toggleService(id, 'restart'); return;
+    case 'runtime-version':
+      openModal('version', id); return;
+    case 'install-runtime':
+      openModal('install', id); return;
+    case 'health-check': {
+      const r = RUNTIMES.filter(function(x){ return x.id === id; })[0];
+      toast(r.name + ' 健康检查通过（v' + r.version + '）','ok'); return;
+    }
+    case 'toggle-auth':
+      state.settings.auth = !state.settings.auth;
+      GATEWAY.auth = state.settings.auth;
+      render();
+      toast(state.settings.auth ? '已启用请求鉴权' : '已关闭请求鉴权','info');
+      return;
+    case 'copy-client': {
+      const url = 'http://' + GATEWAY.addr + ':' + GATEWAY.port + '/v1';
+      const ok = copyText(url);
+      toast(ok ? '已复制：' + url : '复制失败，请手动选中：' + url, ok ? 'ok' : 'bad');
+      return;
+    }
+    case 'export':
+      openModal('export'); return;
+    case 'reset':
+      openModal('reset'); return;
+    case 'modal-close':
+      closeModal(); return;
+    case 'modal-confirm': {
+      const kind = t.getAttribute('data-kind');
+      if(kind === 'create-service') submitCreateService();
+      else if(kind === 'delete-model'){
+        const m = state.models.filter(function(x){ return x.id === id; })[0];
+        const aff = detachModel(id);
+        closeModal(); insp = null; render();
+        toast('已删除 ' + (m ? m.name : '') + '，释放 ' + (m ? fmt(m.size) : '0') + ' GB'
+          + (aff.length ? '；' + aff.length + ' 个服务已停止' : ''), 'ok');
+      } else if(kind === 'unindex'){
+        const m = state.models.filter(function(x){ return x.id === id; })[0];
+        const aff = detachModel(id);
+        closeModal(); insp = null; render();
+        toast('已从索引移除，磁盘文件保留'
+          + (aff.length ? '；' + aff.length + ' 个服务已停止' : ''), 'info');
+      } else if(kind === 'version'){
+        const sel2 = document.querySelector('input[name="ver"]:checked');
+        if(sel2) applyVersion(id, sel2.value);
+      } else if(kind === 'install'){
+        startInstall(id);
+      } else if(kind === 'expose'){
+        const sel2 = document.querySelector('input[name="authmode"]:checked');
+        if(!sel2) return;
+        state.settings.bind = '0.0.0.0';
+        state.settings.auth = sel2.value === 'on';
+        GATEWAY.addr = '0.0.0.0';
+        GATEWAY.auth = state.settings.auth;
+        closeModal(); render();
+        toast(state.settings.auth ? '网关已暴露到局域网，并启用了鉴权' : '网关已暴露到局域网，未启用鉴权', state.settings.auth ? 'ok' : 'info');
+      } else if(kind === 'reset'){
+        const w = document.getElementById('reset-word');
+        if(!w || w.value.trim().toUpperCase() !== 'RESET'){
+          const err = document.getElementById('err-reset');
+          if(err){ err.hidden = false; }
+          return;
+        }
+        state.models = [];
+        state.services = [];
+        state.queue = [];
+        state.recent = [];
+        clearStore();
+        closeModal(); insp = null; state.view = 'models'; render();
+        toast('已恢复出厂设置','ok');
+      }
+      return;
+    }
+    case 'noop':
+      return;
+  }
+});
+
+document.addEventListener('input', function(e){
+  const t = e.target;
+  if(t.getAttribute('data-input') === 'model-q'){
+    if(state.modelTab === 'discover'){
+      state.discover.q = t.value;
+      const el = document.getElementById('discover-results');
+      if(el) el.innerHTML = discoverTable();
+    } else {
+      state.local.q = t.value;
+      const el = document.getElementById('local-table');
+      if(el) el.innerHTML = localTable();
+    }
+  }
+});
+document.addEventListener('change', function(e){
+  const t = e.target;
+  const ch = t.getAttribute('data-change');
+  if(ch === 'dsort'){ state.discover.sort = t.value; const el = document.getElementById('discover-results'); if(el) el.innerHTML = discoverTable(); }
+  else if(ch === 'lsort'){ state.local.sort = t.value; const el = document.getElementById('local-table'); if(el) el.innerHTML = localTable(); }
+  else if(ch === 'connections'){ state.settings.connections = Math.max(1, Math.min(16, Number(t.value) || 4)); render(); }
+  else if(ch === 'logdays'){ state.settings.logDays = Number(t.value); render(); }
+  else if(ch === 'theme'){ state.settings.theme = t.value; applyTheme(); render(); }
+  else if(ch === 'bind'){
+    if(t.value === '0.0.0.0') openModal('expose');
+    else { state.settings.bind = '127.0.0.1'; GATEWAY.addr = '127.0.0.1'; render(); }
+  }
+});
+document.addEventListener('keydown', function(e){
+  if(e.key === 'Escape' && insp && !document.getElementById('modal').open){ insp = null; render(); return; }
+  if((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){
+    const s = document.querySelector('[data-input]');
+    if(s){ e.preventDefault(); s.focus(); s.select(); }
+    return;
+  }
+  if(e.key === 'Enter' || e.key === ' '){
+    const row = e.target && e.target.closest ? e.target.closest('tr[data-act]') : null;
+    if(row){ e.preventDefault(); row.click(); return; }
+  }
+});
+
+/* ============================ live ============================ */
+const LOG_TEMPLATES = [
+  '<b>INFO</b> POST /v1/chat/completions 200 · 412ms · 128 tokens',
+  '<b>INFO</b> POST /v1/chat/completions 200 · 289ms · 96 tokens',
+  '<b>INFO</b> POST /v1/chat/completions 200 · 655ms · 241 tokens',
+  '<b>INFO</b> POST /v1/audio/speech 200 · 210ms · 24.2 KB',
+  '<b>INFO</b> GET  /v1/models 200',
+  '<i>WARN</i> request queue depth reached 3',
+  '<i>WARN</i> client disconnected before completion',
+  '<u>ERR</u>  upstream timeout after 30s'
+];
+setInterval(function(){
+  let dirty = false;
+  state.queue.forEach(function(q){
+    if(q.status !== 'downloading') return;
+    q.pct = Math.min(100, q.pct + q.speed * 0.8);
+    dirty = true;
+    if(q.pct >= 100){ q.status = 'done'; finishDownload(q); }
+  });
+  state.services.forEach(function(s){
+    if(s.status !== 'running') return;
+    if(Math.random() < 0.5){
+      s.logs.push(logLine(LOG_TEMPLATES[Math.floor(Math.random() * LOG_TEMPLATES.length)]));
+      if(s.logs.length > 80) s.logs.shift();
+      dirty = true;
+    }
+  });
+  if(!dirty) return;
+  const q = document.getElementById('queue-list');
+  if(q) q.innerHTML = queueRows();
+  const log = document.getElementById('insp-log');
+  if(log && insp && insp.kind === 'service'){
+    const s = state.services.filter(function(x){ return x.id === insp.id; })[0];
+    if(s) log.innerHTML = s.logs.length ? s.logs.join('') : '<span class="term__line">暂无日志输出</span>';
+  }
+  renderNav();
+  writeStore();
+}, 1000);
+
+/* ============================ boot ============================ */
+(function boot(){
+  const restored = restoreState();
+  if(!restored){
+    state.services.forEach(function(s){
+      if(s.status === 'running'){
+        s.logs.push(logLine('<b>INFO</b> ' + runtimeName(s.runtime) + ' 已就绪，监听 127.0.0.1:' + s.port));
+        s.logs.push(logLine('<b>INFO</b> 载入 ' + s.model + ' 完成'));
+      }
+      if(s.status === 'failed') s.logs.push(logLine('<u>ERR</u>  ' + (s.error || '启动失败')));
+    });
+  }
+  applyTheme();
+  if(themeQuery.addEventListener){
+    themeQuery.addEventListener('change', function(){ if(state.settings.theme === '跟随系统') applyTheme(); });
+  }
+  render();
+})();
+</script>
+</body>
+</html>

@@ -88,6 +88,18 @@ impl AppPaths {
     pub fn logs_root(&self) -> PathBuf {
         self.root.join("logs")
     }
+    /// `runtimes/`
+    ///
+    /// Holds the installed inference engines, one directory per engine and
+    /// version.
+    pub fn runtimes_root(&self) -> PathBuf {
+        self.root.join("runtimes")
+    }
+
+    /// `runtimes/engines/`
+    pub fn engines_root(&self) -> PathBuf {
+        self.runtimes_root().join("engines")
+    }
 
     /// `logs/tts/`
     pub fn tts_logs_root(&self) -> PathBuf {
@@ -105,6 +117,8 @@ impl AppPaths {
             self.generated_audio_root(),
             self.logs_root(),
             self.tts_logs_root(),
+            self.runtimes_root(),
+            self.engines_root(),
         ] {
             std::fs::create_dir_all(&dir).map_err(|e| TtsError::io(&dir, e))?;
         }

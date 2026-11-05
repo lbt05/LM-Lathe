@@ -12,11 +12,13 @@
   "app": {
     "windows": [
       {
-        "title": "本地 AI 工作台 · TTS",
+        "title": "LM Lathe",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "width": 1320,
         "height": 880,
-        "minWidth": 1024,
-        "minHeight": 680,
+        "minWidth": 900,
+        "minHeight": 620,
         "resizable": true
       }
     ],

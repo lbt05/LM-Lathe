@@ -12,6 +12,7 @@ use ai_scheduler::{Scheduler, SchedulerConfig};
 use crate::adapter::engine::EngineSettings;
 use crate::adapter::factory::AdapterFactory;
 use crate::audio::AudioManager;
+use crate::engine_assets::EngineAssetManager;
 use crate::error::TtsResult;
 use crate::hardware::HardwareProfile;
 use crate::installer::{InstallTracker, ModelInstaller};
@@ -41,6 +42,8 @@ pub struct TtsService {
     pub installer: Arc<ModelInstaller>,
     /// Progress of the running installations.
     pub installs: InstallTracker,
+    /// Owns the installed inference engines.
+    pub engines: Arc<EngineAssetManager>,
 }
 
 impl TtsService {
@@ -81,6 +84,13 @@ impl TtsService {
         };
         engine_settings.request_timeout = Duration::from_secs(600);
 
+        // The managed engine installations win over the binaries on the PATH.
+        let engines = EngineAssetManager::new(paths.clone())?;
+        let resolver = engines.clone();
+        engine_settings.binary_resolver = Some(Arc::new(move |engine_id: &str| {
+            resolver.resolve_program(engine_id)
+        }));
+
         let factory = AdapterFactory::new(engine_settings);
         let manager = TTSRuntimeManager::new(
             registry.clone(),
@@ -103,6 +113,7 @@ impl TtsService {
             hardware,
             installer,
             installs: InstallTracker::default(),
+            engines,
         }))
     }
 

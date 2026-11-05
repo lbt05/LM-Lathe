@@ -103,7 +103,76 @@ export interface InstallProgress {
   files_done: number;
   files_total: number;
   bytes: number;
+  bytes_total: number;
   error?: string;
+}
+
+/** One installed version of an inference engine. */
+export interface InstalledEngine {
+  version: string;
+  path: string;
+  entry: string | null;
+  installed_at: string;
+  size_bytes: number;
+  source: string;
+}
+
+/** An inference engine the manager knows about. */
+export interface EngineAsset {
+  id: string;
+  name: string;
+  summary: string;
+  distribution: string;
+  repository: string | null;
+  package: string | null;
+  program: string;
+  programs: string[];
+  note: string | null;
+  requirements: string[];
+  capabilities: string[];
+  platforms: string[];
+  supported_here: boolean;
+  platform: string;
+  system_entry: string | null;
+  current_version: string | null;
+  installed: InstalledEngine[];
+  size_bytes: number;
+  status: string;
+  model_engine_ids: string[];
+}
+
+/** A version of an engine that can be installed. */
+export interface EngineVersion {
+  version: string;
+  published_at: string | null;
+  prerelease: boolean;
+  size_bytes: number | null;
+  asset_name: string | null;
+  download_url: string | null;
+  installed: boolean;
+}
+
+/** Progress of a running engine installation. */
+export interface EngineInstallProgress {
+  engine_id: string;
+  version: string;
+  state: string;
+  percent: number | null;
+  bytes: number;
+  total_bytes: number | null;
+  message: string;
+  log: string[];
+  error?: string;
+}
+
+/** The result of an engine health check. */
+export interface EngineHealth {
+  engine_id: string;
+  status: string;
+  detail: string;
+  entry: string | null;
+  endpoint: string | null;
+  duration_ms: number;
 }
 
 /** The error the API answers with. */
@@ -173,7 +242,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (response.status === 204) return undefined as T;
   const text = await response.text();
-  return (text ? JSON.parse(text) : undefined) as T;
+  if (!text) return undefined as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    // Some actions answer with a plain text message, e.g. `the
+    // installation has started` with the status 202.
+    return text as unknown as T;
+  }
 }
 
 export const api = {
@@ -216,6 +292,36 @@ export const api = {
     }),
   deleteVoice: (id: string) =>
     request<void>(`/v1/tts/voices/${id}`, { method: "DELETE" }),
+
+  /** The inference engines and their installation state. */
+  engines: () => request<EngineAsset[]>("/v1/runtimes"),
+  /** The versions of an engine that can be installed. */
+  engineVersions: (id: string) =>
+    request<EngineVersion[]>(`/v1/runtimes/${id}/versions`),
+  /** Starts the installation of an engine version. */
+  installEngine: (id: string, version?: string) =>
+    request<void>(`/v1/runtimes/${id}/install`, {
+      method: "POST",
+      body: JSON.stringify({ version: version ?? null }),
+    }),
+  /** The progress of a running engine installation. */
+  engineInstallProgress: (id: string) =>
+    request<EngineInstallProgress>(`/v1/runtimes/${id}/install-progress`),
+  /** Activates an installed engine version. */
+  activateEngine: (id: string, version: string) =>
+    request<void>(`/v1/runtimes/${id}/activate`, {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    }),
+  /** Removes an installed engine version. */
+  uninstallEngine: (id: string, version: string) =>
+    request<void>(`/v1/runtimes/${id}/uninstall`, {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    }),
+  /** Starts the engine service and probes its health endpoint. */
+  engineHealth: (id: string) =>
+    request<EngineHealth>(`/v1/runtimes/${id}/health`, { method: "POST" }),
 
   designVoice: (body: Record<string, unknown>) =>
     request<VoiceCreation>("/v1/tts/voices/design", {

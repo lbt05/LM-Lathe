@@ -154,6 +154,14 @@ impl TTSModelSpec {
             .unwrap_or(false)
     }
 
+    /// `true` when the engine of the model is part of the application.
+    ///
+    /// The mock engine needs no checkpoint on the disk, so there is nothing
+    /// to download for it.
+    pub fn is_builtin(&self) -> bool {
+        self.mode == EngineMode::Mock
+    }
+
     /// `true` when the model exposes the given capability.
     pub fn supports(&self, feature: TtsFeature) -> bool {
         self.features.contains(&feature)
@@ -222,9 +230,18 @@ impl TTSModelRegistry {
     }
 
     /// `true` when the checkpoint of the model is on the disk.
+    ///
+    /// A model whose engine is part of the application is always available.
+    /// A checkpoint that is only half downloaded does not count: it carries
+    /// no weights yet.
     pub fn is_installed(&self, id: &str) -> bool {
+        if let Some(spec) = self.resolve(id) {
+            if spec.is_builtin() {
+                return true;
+            }
+        }
         self.install_path(id)
-            .map(|path| path.is_dir())
+            .map(|path| has_weights(&path))
             .unwrap_or(false)
     }
 
@@ -391,7 +408,32 @@ impl TTSModelRegistry {
     }
 }
 
-/// The models supported in milestone 1.
+/// The display names of the catalogue families.
+/// `true` when the directory holds the weights of a checkpoint.
+///
+/// The installer writes the files of a model one by one, so a directory with
+/// nothing but the configuration files belongs to a download that is still
+/// running.
+fn has_weights(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        if !path.is_file() {
+            return false;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        name.ends_with(".safetensors")
+            || name.ends_with(".safetensors.index.json")
+            || name.ends_with(".gguf")
+            || name.ends_with(".bin")
+            || name.ends_with(".pt")
+    })
+}
+
 pub fn builtin_models() -> Vec<TTSModelSpec> {
     const GB: u64 = 1024 * 1024 * 1024;
 
@@ -513,6 +555,39 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
                 ..Default::default()
             },
             mode: EngineMode::SglangOmni,
+            default_ttl_secs: None,
+            aliases: vec![],
+            launch_args: vec![],
+            local_path: None,
+            notes: None,
+        },
+        TTSModelSpec {
+            id: "qwen3-tts-0.6b-customvoice-mlx".to_string(),
+            name: "Qwen3-TTS 0.6B CustomVoice (MLX)".to_string(),
+            family: ModelFamily::Qwen3Tts,
+            engine_id: "sglang-omni-mlx".to_string(),
+            hf_repo: "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16".to_string(),
+            version: "0.6B".to_string(),
+            format: "safetensors".to_string(),
+            size_bytes: 2_498_419_405,
+            estimated_memory_bytes: 8 * GB,
+            features: vec![
+                TtsFeature::TextToSpeech,
+                TtsFeature::VoiceCloning,
+                TtsFeature::Streaming,
+            ],
+            hardware: HardwareRequirement {
+                platforms: vec!["macos".to_string()],
+                min_total_ram_bytes: 16 * GB,
+                notes: Some(
+                    "Native MLX runtime on Apple Silicon. The Torch path of \
+                     SGLang-Omni crashes in the MPS backend, this checkpoint \
+                     is served by the native qwen3_tts_server."
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+            mode: EngineMode::MlxNative,
             default_ttl_secs: None,
             aliases: vec![],
             launch_args: vec![],

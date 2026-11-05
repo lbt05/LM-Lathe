@@ -8,6 +8,7 @@
 //! * lifecycle endpoints to load, unload, pin and inspect the models.
 
 pub mod dto;
+pub mod runtimes;
 
 use std::sync::Arc;
 
@@ -20,10 +21,7 @@ use axum::Router;
 use tts_core::error::TtsError;
 use tts_core::registry::TTSModelSpec;
 use tts_core::service::TtsService;
-use tts_core::types::{
-    AudioReference, EngineSpecificParameters, FishDrama3Parameters, MockParameters,
-    Qwen3TtsParameters, TTSRequest, TtsFeature,
-};
+use tts_core::types::{AudioReference, EngineSpecificParameters, FishDrama3Parameters, MockParameters, Qwen3TtsParameters, Qwen3TtsTaskType, RuntimeState, TTSRequest, TtsFeature};
 use tts_core::voice::{NewVoiceProfile, VoiceFilter, VoicePatch};
 
 use dto::*;
@@ -41,7 +39,7 @@ pub fn router(service: Arc<TtsService>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/models", get(list_models))
-        .route("/v1/tts/models", get(list_models))
+        .route("/v1/tts/models", get(list_catalogue))
         .route("/v1/tts/status", get(status))
         .route("/v1/audio/speech", post(speech))
         .route("/v1/tts/speak", post(speak))
@@ -62,9 +60,37 @@ pub fn router(service: Arc<TtsService>) -> Router {
         .route("/v1/tts/models/{id}/install", get(install_progress))
         .route("/v1/tts/models/{id}/uninstall", post(uninstall_model))
         .route("/v1/tts/models/{id}/logs", get(model_logs))
+        .route("/v1/runtimes", get(runtimes::list_runtimes))
+        .route("/v1/runtimes/{id}", get(runtimes::get_runtime))
+        .route("/v1/runtimes/{id}/versions", get(runtimes::list_versions))
+        .route("/v1/runtimes/{id}/install", post(runtimes::install))
+        .route(
+            "/v1/runtimes/{id}/install-progress",
+            get(runtimes::install_progress),
+        )
+        .route("/v1/runtimes/{id}/activate", post(runtimes::activate))
+        .route("/v1/runtimes/{id}/uninstall", post(runtimes::uninstall))
+        .route("/v1/runtimes/{id}/health", post(runtimes::health))
         .route("/v1/audio/{file}", get(get_audio))
         .layer(tower_http::cors::CorsLayer::permissive())
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http()
+                .make_span_with(|request: &axum::http::Request<_>| {
+                    tracing::info!(
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                        "request"
+                    );
+                    tracing::Span::current()
+                })
+                .on_response(
+                    |response: &axum::http::Response<_>,
+                     latency: std::time::Duration,
+                     _span: &tracing::Span| {
+                        tracing::info!(status = response.status().as_u16(), ?latency, "response");
+                    },
+                ),
+        )
         .with_state(state)
 }
 
@@ -128,37 +154,72 @@ async fn list_models(State(state): State<ApiState>) -> Result<impl IntoResponse,
         .registry
         .list()
         .into_iter()
-        .map(|spec| {
-            let report = state.service.manager.compatibility(&spec);
-            let runtime = runtimes.iter().find(|runtime| runtime.model_id == spec.id);
-            ModelDto {
-                id: spec.id.clone(),
-                name: spec.name.clone(),
-                family: spec.family.as_str().to_string(),
-                engine_id: spec.engine_id.clone(),
-                hf_repo: spec.hf_repo.clone(),
-                version: spec.version.clone(),
-                format: spec.format.clone(),
-                size_bytes: spec.size_bytes,
-                estimated_memory_bytes: spec.estimated_memory_bytes,
-                features: spec
-                    .features
-                    .iter()
-                    .map(|feature| feature.as_str().to_string())
-                    .collect(),
-                compatible: report.compatible,
-                compatibility: report.level.as_str().to_string(),
-                notes: report.notes,
-                installed: state.service.registry.is_installed(&spec.id),
-                path: state.service.registry.install_path(&spec.id),
-                state: runtime
-                    .map(|runtime| runtime.state.as_str().to_string())
-                    .unwrap_or_else(|| "unloaded".to_string()),
-                pinned: runtime.map(|runtime| runtime.pinned).unwrap_or(false),
-            }
-        })
+        .filter(|spec| is_servable(&state, spec))
+        .map(|spec| model_dto(&state, &spec, &runtimes))
         .collect();
     Ok(axum::Json(models))
+}
+
+/// `GET /v1/tts/models`
+///
+/// The full catalogue of the known models, including the ones that are not
+/// on the disk yet.
+async fn list_catalogue(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+    let runtimes = state.service.manager.runtimes();
+    let models: Vec<ModelDto> = state
+        .service
+        .registry
+        .list()
+        .into_iter()
+        .map(|spec| model_dto(&state, &spec, &runtimes))
+        .collect();
+    Ok(axum::Json(models))
+}
+
+/// `true` when the checkpoint of the model is on the disk and the machine can
+/// run it, so that the server is able to serve it.
+fn is_servable(state: &ApiState, spec: &TTSModelSpec) -> bool {
+    if !state.service.registry.is_installed(&spec.id) {
+        return false;
+    }
+    state.service.manager.compatibility(spec).compatible
+}
+
+/// Maps a model to its payload.
+fn model_dto(
+    state: &ApiState,
+    spec: &TTSModelSpec,
+    runtimes: &[tts_core::runtime::TTSRuntime],
+) -> ModelDto {
+    let report = state.service.manager.compatibility(spec);
+    let runtime = runtimes
+        .iter()
+        .find(|runtime| runtime.model_id == spec.id);
+    ModelDto {
+        id: spec.id.clone(),
+        name: spec.name.clone(),
+        family: spec.family.as_str().to_string(),
+        engine_id: spec.engine_id.clone(),
+        hf_repo: spec.hf_repo.clone(),
+        version: spec.version.clone(),
+        format: spec.format.clone(),
+        size_bytes: spec.size_bytes,
+        estimated_memory_bytes: spec.estimated_memory_bytes,
+        features: spec
+            .features
+            .iter()
+            .map(|feature| feature.as_str().to_string())
+            .collect(),
+        compatible: report.compatible,
+        compatibility: report.level.as_str().to_string(),
+        notes: report.notes,
+        installed: state.service.registry.is_installed(&spec.id),
+        path: state.service.registry.install_path(&spec.id),
+        state: runtime
+            .map(|runtime| runtime.state.as_str().to_string())
+            .unwrap_or_else(|| "unloaded".to_string()),
+        pinned: runtime.map(|runtime| runtime.pinned).unwrap_or(false),
+    }
 }
 
 /// `GET /v1/tts/status`
@@ -223,15 +284,18 @@ async fn speak(
     body: axum::Json<SpeakRequest>,
 ) -> Result<Response, ApiError> {
     let request = body.0;
-    let spec = resolve_model(&state.service, &request.model)?;
     let format = request
         .response_format
         .as_deref()
         .and_then(tts_core::types::AudioFormat::parse)
         .unwrap_or(tts_core::types::AudioFormat::Wav);
 
+    let spec = resolve_model(&state.service, &request.model)?;
+
     let parameters = match request.parameters.clone() {
-        Some(value) => serde_json::from_value(value).unwrap_or(EngineSpecificParameters::default()),
+        Some(value) => {
+            serde_json::from_value(value).unwrap_or_else(|_| default_parameters(&spec))
+        }
         None => default_parameters(&spec),
     };
 
@@ -540,11 +604,16 @@ async fn install_model(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let spec = state
-        .service
-        .registry
-        .resolve(&id)
-        .ok_or_else(|| TtsError::ModelNotFound(id.clone()))?;
+    let spec = resolve_model(&state.service, &id)?;
+
+    // The mock engine is part of the application, there is nothing to
+    // download for it.
+    if spec.is_builtin() {
+        return Err(ApiError(TtsError::InvalidRequest(format!(
+            "`{}` 内置于应用，无需下载",
+            spec.id
+        ))));
+    }
 
     // The specification demands the compatibility check before the model is
     // installed.
@@ -587,11 +656,7 @@ async fn install_progress(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let spec = state
-        .service
-        .registry
-        .resolve(&id)
-        .ok_or_else(|| TtsError::ModelNotFound(id.clone()))?;
+    let spec = resolve_model(&state.service, &id)?;
     let progress = state.service.installs.get(&spec.id).unwrap_or_else(|| {
         tts_core::installer::InstallProgress {
             model_id: spec.id.clone(),
@@ -599,6 +664,7 @@ async fn install_progress(
             files_done: 0,
             files_total: 0,
             bytes: 0,
+            bytes_total: 0,
             error: None,
         }
     });
@@ -610,11 +676,28 @@ async fn uninstall_model(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let spec = state
+    let spec = resolve_model(&state.service, &id)?;
+    if spec.is_builtin() {
+        return Err(ApiError(TtsError::InvalidRequest(format!(
+            "`{}` 内置于应用，无法删除",
+            spec.id
+        ))));
+    }
+    // A checkpoint that is in use must not disappear under the running
+    // engine.
+    if state
         .service
-        .registry
-        .resolve(&id)
-        .ok_or_else(|| TtsError::ModelNotFound(id.clone()))?;
+        .manager
+        .status()
+        .runtimes
+        .iter()
+        .any(|runtime| runtime.model_id == spec.id && runtime.state == RuntimeState::Running)
+    {
+        return Err(ApiError(TtsError::InvalidRequest(format!(
+            "`{}` 正在运行，请先卸载后再删除",
+            spec.id
+        ))));
+    }
     state.service.installer.uninstall(&spec)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -694,7 +777,7 @@ async fn render_preview(
     Ok((Some(sample.name), sample.path.into()))
 }
 
-/// Resolves a model id or alias.
+/// Resolves a model id or an alias.
 fn resolve_model(service: &TtsService, model: &str) -> Result<TTSModelSpec, ApiError> {
     service
         .registry
@@ -702,24 +785,42 @@ fn resolve_model(service: &TtsService, model: &str) -> Result<TTSModelSpec, ApiE
         .ok_or_else(|| ApiError(TtsError::ModelNotFound(model.to_string())))
 }
 
-/// Builds the engine specific parameters of an OpenAI compatible request.
-fn parameters_for(spec: &TTSModelSpec, request: &SpeechRequest) -> EngineSpecificParameters {
+/// Builds the engine specific parameters of a request.
+///
+/// The fields of the request are translated into the parameters of the
+/// adapter that serves the model.
+fn parameters_for(
+    spec: &TTSModelSpec,
+    request: &SpeechRequest,
+) -> EngineSpecificParameters {
     let references: Vec<AudioReference> = request
         .references
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|reference| AudioReference {
-            audio_path: reference.audio_path,
-            data: reference.data,
-            text: reference.text,
-            speaker_embedding: None,
+        .as_ref()
+        .map(|list| {
+            list.iter()
+                .map(|reference| AudioReference {
+                    audio_path: reference.audio_path.clone(),
+                    data: reference.data.clone(),
+                    text: reference.text.clone(),
+                    speaker_embedding: None,
+                })
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
+
     match spec.family {
         tts_core::types::ModelFamily::Qwen3Tts => {
+            let task_type = match request.task_type.as_deref() {
+                Some("VoiceDesign") | Some("voice_design") | Some("design") => {
+                    Some(Qwen3TtsTaskType::VoiceDesign)
+                }
+                Some("CustomVoice") | Some("custom_voice") => {
+                    Some(Qwen3TtsTaskType::CustomVoice)
+                }
+                _ => None,
+            };
             EngineSpecificParameters::Qwen3Tts(Qwen3TtsParameters {
-                task_type: request.task(),
+                task_type,
                 instructions: request.instructions.clone(),
                 speaker: None,
                 references,
@@ -740,7 +841,6 @@ fn parameters_for(spec: &TTSModelSpec, request: &SpeechRequest) -> EngineSpecifi
     }
 }
 
-/// Default parameters of a model family.
 fn default_parameters(spec: &TTSModelSpec) -> EngineSpecificParameters {
     match spec.family {
         tts_core::types::ModelFamily::Qwen3Tts => {

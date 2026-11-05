@@ -33,6 +33,11 @@ impl AdapterFactory {
         &self.engine
     }
 
+    /// The log of the last start attempt of a model.
+    pub fn logs_for(&self, model_id: &str) -> String {
+        self.engine.logs_for(model_id)
+    }
+
     /// Creates the adapter that serves the given model.
     pub fn create(&self, spec: &TTSModelSpec) -> TtsResult<Arc<dyn TTSAdapter>> {
         Ok(match spec.family {

@@ -46,6 +46,12 @@ pub enum Command {
         #[command(subcommand)]
         command: VoiceCommand,
     },
+    /// Manages the inference engines.
+    Engines {
+        /// The engine command.
+        #[command(subcommand)]
+        command: EngineCommand,
+    },
     /// Synthesises speech.
     Speak(SpeakArgs),
     /// Plays an audio file with the platform player.
@@ -219,6 +225,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Serve(args) => serve(service.clone(), args).await,
         Command::Models { command } => models(service.clone(), command).await,
         Command::Voices { command } => voices(service.clone(), command).await,
+        Command::Engines { command } => engines(service.clone(), command).await,
         Command::Speak(args) => speak(service.clone(), args).await,
         Command::Play(args) => play(service.clone(), args),
         Command::Status => status(service.clone()),
@@ -274,6 +281,115 @@ async fn stdin_closed() {
     let mut buffer = Vec::new();
     let _ = stdin.read_to_end(&mut buffer).await;
     tracing::info!("the parent process closed the connection");
+}
+
+/// Engine commands.
+#[derive(Debug, Subcommand)]
+pub enum EngineCommand {
+    /// Lists the engines and their installation state.
+    List,
+    /// Shows the versions of an engine that can be installed.
+    Versions {
+        /// The engine id.
+        id: String,
+    },
+    /// Installs a version of an engine.
+    Install {
+        /// The engine id.
+        id: String,
+        /// The version to install. The newest one is used when it is missing.
+        version: Option<String>,
+    },
+    /// Activates an installed version of an engine.
+    Use {
+        /// The engine id.
+        id: String,
+        /// The version to activate.
+        version: String,
+    },
+    /// Removes an installed version of an engine.
+    Uninstall {
+        /// The engine id.
+        id: String,
+        /// The version to remove.
+        version: String,
+    },
+}
+
+/// Engine commands.
+async fn engines(service: std::sync::Arc<TtsService>, command: EngineCommand) -> Result<()> {
+    match command {
+        EngineCommand::List => {
+            println!(
+                "{:<14} {:<12} {:<12} {:>10} {:>8}  {}",
+                "ENGINE", "STATUS", "VERSION", "SIZE", "VERS", "SOURCE"
+            );
+            for engine in service.engines.list() {
+                println!(
+                    "{:<14} {:<12} {:<12} {:>9.1}M {:>8}  {}",
+                    engine.id,
+                    engine.status,
+                    engine.current_version.clone().unwrap_or_else(|| "-".to_string()),
+                    engine.size_bytes as f64 / 1024.0 / 1024.0,
+                    engine.installed.len(),
+                    engine
+                        .repository
+                        .clone()
+                        .or_else(|| engine.package.clone())
+                        .unwrap_or_else(|| "-".to_string()),
+                );
+            }
+            Ok(())
+        }
+        EngineCommand::Versions { id } => {
+            let versions = service.engines.versions(&id).await?;
+            println!("{:<16} {:<12} {:>10}  {}", "VERSION", "KIND", "SIZE", "PUBLISHED");
+            for version in versions {
+                println!(
+                    "{:<16} {:<12} {:>9.1}M  {}",
+                    version.version,
+                    if version.prerelease { "pre" } else { "stable" },
+                    version.size_bytes.unwrap_or(0) as f64 / 1024.0 / 1024.0,
+                    version.published_at.clone().unwrap_or_else(|| "-".to_string()),
+                );
+            }
+            Ok(())
+        }
+        EngineCommand::Install { id, version } => {
+            service.engines.start_install(&id, version)?;
+            println!("installing {id}…");
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let Some(progress) = service.engines.install_progress(&id) else {
+                    continue;
+                };
+                match progress.percent {
+                    Some(percent) => println!(
+                        "  {} {:.0}% — {}",
+                        progress.state, percent, progress.message
+                    ),
+                    None => println!("  {} — {}", progress.state, progress.message),
+                }
+                if progress.state == "done" {
+                    println!("installed {}", progress.version);
+                    return Ok(());
+                }
+                if progress.state == "failed" {
+                    anyhow::bail!("the installation failed: {}", progress.message);
+                }
+            }
+        }
+        EngineCommand::Use { id, version } => {
+            service.engines.activate(&id, &version)?;
+            println!("{id} now uses {version}");
+            Ok(())
+        }
+        EngineCommand::Uninstall { id, version } => {
+            service.engines.uninstall(&id, &version)?;
+            println!("removed {id} {version}");
+            Ok(())
+        }
+    }
 }
 
 /// Model commands.

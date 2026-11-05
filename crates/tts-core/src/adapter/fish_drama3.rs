@@ -209,6 +209,10 @@ impl FishDrama3Adapter {
 
 #[async_trait]
 impl TTSAdapter for FishDrama3Adapter {
+    fn logs_for(&self, model_id: &str) -> String {
+        self.engine.logs_for(model_id)
+    }
+
     async fn start(&self, config: TTSRuntimeConfig) -> TtsResult<RuntimeHandle> {
         EngineAdapter::start(self.engine.as_ref(), &config).await
     }

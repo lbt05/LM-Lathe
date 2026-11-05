@@ -6,7 +6,7 @@
 //! engine log file.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -23,7 +23,7 @@ use crate::types::{
 };
 
 /// Tuning knobs of the engine adapter.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EngineSettings {
     /// Binary used for the CUDA path.
     pub sglang_binary: String,
@@ -35,6 +35,12 @@ pub struct EngineSettings {
     pub request_timeout: Duration,
     /// Interval between two health probes.
     pub health_interval: Duration,
+    /// Resolves the program of an engine.
+    ///
+    /// The callback receives the engine id of a model (`sglang-omni`,
+    /// `fishaudio-drama3-mlx`) and returns the binary that serves it. The
+    /// managed engine installations win over the `PATH`.
+    pub binary_resolver: Option<Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>>,
 }
 
 impl Default for EngineSettings {
@@ -45,13 +51,53 @@ impl Default for EngineSettings {
             logs_dir: PathBuf::from("logs/tts"),
             request_timeout: Duration::from_secs(600),
             health_interval: Duration::from_millis(750),
+            binary_resolver: None,
         }
+    }
+}
+
+impl EngineSettings {
+    /// Resolves the binary that serves the given engine id.
+    fn resolve_binary(&self, engine_id: &str) -> Option<PathBuf> {
+        self.binary_resolver.as_ref().and_then(|resolver| resolver(engine_id))
+    }
+}
+
+impl std::fmt::Debug for EngineSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EngineSettings")
+            .field("sglang_binary", &self.sglang_binary)
+            .field("mlx_binary", &self.mlx_binary)
+            .field("logs_dir", &self.logs_dir)
+            .field("request_timeout", &self.request_timeout)
+            .field("health_interval", &self.health_interval)
+            .finish()
     }
 }
 
 struct ProcessEntry {
     child: Child,
     log_path: PathBuf,
+}
+
+/// The last 64 kilobytes of a log file.
+fn tail_of(path: &Path) -> String {
+    let Ok(bytes) = std::fs::read(path) else {
+        return String::new();
+    };
+    let tail = bytes.len().saturating_sub(64 * 1024);
+    String::from_utf8_lossy(&bytes[tail..]).to_string()
+}
+
+/// The last lines of a log, without the empty ones.
+fn last_lines(log: &str, count: usize) -> String {
+    let lines: Vec<&str> = log
+        .lines()
+        .map(|line| line.trim_end())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(count);
+    lines[start..].join("\n")
 }
 
 /// Adapter that manages the SGLang-Omni inference service.
@@ -62,6 +108,8 @@ pub struct SGLangOmniAdapter {
     current: RwLock<Option<RuntimeHandle>>,
     protocols: RwLock<HashMap<crate::types::ModelFamily, Arc<dyn ModelProtocol>>>,
     registry: RwLock<Option<Arc<crate::registry::TTSModelRegistry>>>,
+    /// The log of every start attempt, also the ones that failed.
+    log_files: Mutex<HashMap<String, PathBuf>>,
 }
 
 impl SGLangOmniAdapter {
@@ -78,6 +126,7 @@ impl SGLangOmniAdapter {
             current: RwLock::new(None),
             protocols: RwLock::new(HashMap::new()),
             registry: RwLock::new(None),
+            log_files: Mutex::new(HashMap::new()),
         })
     }
 
@@ -121,7 +170,12 @@ impl SGLangOmniAdapter {
                 args.push("--port".to_string());
                 args.push(port.to_string());
                 args.extend(config.extra_args.iter().cloned());
-                (self.settings.sglang_binary.clone(), args)
+                let binary = self
+                    .settings
+                    .resolve_binary("sglang-omni")
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|| self.settings.sglang_binary.clone());
+                (binary, args)
             }
             EngineMode::MlxNative => {
                 args.push("--model-path".to_string());
@@ -133,10 +187,65 @@ impl SGLangOmniAdapter {
                 args.push("--port".to_string());
                 args.push(port.to_string());
                 args.extend(config.extra_args.iter().cloned());
-                (self.settings.mlx_binary.clone(), args)
+                // The engine id of the model decides which server of the
+                // native runtime is started: the drama3 server or the
+                // Qwen3-TTS one.
+                let binary = self
+                    .settings
+                    .resolve_binary(&config.engine_id)
+                    .or_else(|| self.settings.resolve_binary("fishaudio-drama3-mlx"))
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|| self.settings.mlx_binary.clone());
+                (binary, args)
             }
             EngineMode::Mock => ("mock".to_string(), Vec::new()),
         }
+    }
+
+    /// The log of the last start attempt of a model.
+    ///
+    /// A model that could not be loaded has no runtime, but the engine wrote
+    /// the reason into its log. The file is found even when the server was
+    /// restarted in between, because the logs are named after the model.
+    pub fn logs_for(&self, model_id: &str) -> String {
+        let path = self
+            .log_files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(model_id)
+            .cloned()
+            .or_else(|| self.newest_log(model_id));
+        match path {
+            Some(path) => tail_of(&path),
+            None => String::new(),
+        }
+    }
+
+    /// The newest log file of a model.
+    fn newest_log(&self, model_id: &str) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(&self.settings.logs_dir).ok()?;
+        let prefix = format!("{model_id}-");
+        let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !name.starts_with(&prefix) {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            if newest.as_ref().map(|(time, _)| modified > *time).unwrap_or(true) {
+                newest = Some((modified, path));
+            }
+        }
+        newest.map(|(_, path)| path)
     }
 
     /// Probes the health endpoint of a running engine.
@@ -179,14 +288,21 @@ impl SGLangOmniAdapter {
         child: &mut Child,
         endpoint: &str,
         deadline: Instant,
+        log_path: &Path,
     ) -> TtsResult<()> {
         let mut status;
         loop {
             match child.try_wait() {
                 Ok(Some(exit)) => {
-                    return Err(TtsError::Engine(format!(
-                        "engine exited during startup with {exit}"
-                    )));
+                    // The engine wrote the reason into its log, the user has
+                    // to see it.
+                    let log = tail_of(log_path);
+                    let reason = last_lines(&log, 12);
+                    return Err(TtsError::Engine(if reason.is_empty() {
+                        format!("engine exited during startup with {exit}")
+                    } else {
+                        format!("engine exited during startup with {exit}:\n{reason}")
+                    }));
                 }
                 Ok(None) => {}
                 Err(err) => {
@@ -265,12 +381,16 @@ impl EngineAdapter for SGLangOmniAdapter {
         })?;
         let pid = child.id();
         let endpoint = format!("http://127.0.0.1:{port}");
+        self.log_files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(config.model_id.clone(), log_path.clone());
 
         tracing::info!(model = %config.model_id, binary = %binary, ?args, ?pid, "starting engine");
 
         let deadline = Instant::now() + config.health_timeout;
         match self
-            .wait_until_healthy(&mut child, &endpoint, deadline)
+            .wait_until_healthy(&mut child, &endpoint, deadline, &log_path)
             .await
         {
             Ok(()) => {}

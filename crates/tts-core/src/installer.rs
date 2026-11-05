@@ -57,6 +57,8 @@ pub struct InstallProgress {
     pub files_total: usize,
     /// Bytes written so far.
     pub bytes: u64,
+    /// Size of the whole repository in bytes.
+    pub bytes_total: u64,
     /// Error message when the installation failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -80,6 +82,7 @@ impl InstallTracker {
                 files_done: 0,
                 files_total: 0,
                 bytes: 0,
+                bytes_total: 0,
                 error: None,
             },
         );
@@ -214,9 +217,20 @@ impl ModelInstaller {
             ..Default::default()
         };
 
+        // The size of the repository, the progress is measured in bytes and
+        // not in files: a checkpoint holds a few small files and one huge
+        // weight file, so counting the files would be meaningless.
+        let bytes_total: u64 = files.iter().filter_map(|file| file.size).sum();
+
         if let Some(tracker) = tracker {
-            tracker.update(&spec.id, |progress| progress.files_total = files.len());
+            tracker.update(&spec.id, |progress| {
+                progress.files_total = files.len();
+                progress.bytes_total = bytes_total;
+            });
         }
+
+        // The bytes that are already on the disk.
+        let mut written: u64 = 0;
 
         for file in files {
             let destination = root.join(&file.path);
@@ -226,8 +240,12 @@ impl ModelInstaller {
                     .unwrap_or(false);
                 if complete {
                     report.skipped.push(file.path.clone());
+                    written += size;
                     if let Some(tracker) = tracker {
-                        tracker.update(&spec.id, |progress| progress.files_done += 1);
+                        tracker.update(&spec.id, |progress| {
+                            progress.files_done += 1;
+                            progress.bytes = written;
+                        });
                     }
                     continue;
                 }
@@ -240,50 +258,24 @@ impl ModelInstaller {
                 })?;
             }
 
-            let url = format!(
-                "{}/{}/resolve/main/{}",
-                self.endpoint,
-                spec.hf_repo,
-                file.path.replace(' ', "%20")
-            );
-            let response = self
-                .authorized(self.client.get(url))
-                .send()
-                .await
-                .map_err(|err| {
-                    TtsError::Engine(format!("failed to download `{}`: {err}", file.path))
-                })?;
+            let fetched = self
+                .download_file(spec, &file, &destination, tracker, written)
+                .await?;
 
-            if !response.status().is_success() {
-                return Err(TtsError::Engine(format!(
-                    "failed to download `{}`: the hub answered {}",
-                    file.path,
-                    response.status()
-                )));
-            }
-
-            let bytes = response.bytes().await.map_err(|err| {
-                TtsError::Engine(format!("failed to download `{}`: {err}", file.path))
-            })?;
-
-            std::fs::write(&destination, &bytes).map_err(|source| TtsError::Io {
-                path: destination.clone(),
-                source,
-            })?;
-
-            report.bytes += bytes.len() as u64;
+            written += fetched;
+            report.bytes += fetched;
             report.downloaded.push(file.path.clone());
             tracing::info!(
                 model = %spec.id,
                 file = %file.path,
-                bytes = bytes.len(),
+                bytes = fetched,
                 "downloaded"
             );
 
             if let Some(tracker) = tracker {
                 tracker.update(&spec.id, |progress| {
                     progress.files_done += 1;
-                    progress.bytes += bytes.len() as u64;
+                    progress.bytes = written;
                 });
             }
         }
@@ -291,9 +283,122 @@ impl ModelInstaller {
         Ok(report)
     }
 
+    /// Downloads one file of the repository into `destination`.
+    ///
+    /// The bytes are streamed into a file next to the destination, so that a
+    /// download of several gigabytes does not live in the memory. A file that
+    /// was interrupted is continued where it stopped.
+    async fn download_file(
+        &self,
+        spec: &TTSModelSpec,
+        file: &RepoFile,
+        destination: &Path,
+        tracker: Option<&InstallTracker>,
+        written: u64,
+    ) -> TtsResult<u64> {
+        let part = part_path(destination);
+
+        // The bytes of an interrupted download.
+        let mut resume_from: u64 = 0;
+        if let Ok(meta) = std::fs::metadata(&part) {
+            if meta.is_file() {
+                resume_from = meta.len();
+            }
+        }
+
+        let url = format!(
+            "{}/{}/resolve/main/{}",
+            self.endpoint,
+            spec.hf_repo,
+            file.path.replace(' ', "%20")
+        );
+        let mut request = self.client.get(url);
+        if resume_from > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+        }
+
+        let mut response = self.authorized(request).send().await.map_err(|err| {
+            TtsError::Engine(format!("failed to download `{}`: {err}", file.path))
+        })?;
+
+        if !response.status().is_success() {
+            return Err(TtsError::Engine(format!(
+                "failed to download `{}`: the hub answered {}",
+                file.path,
+                response.status()
+            )));
+        }
+
+        // The hub continues the download when it answers with `206`, otherwise
+        // the file is written from the beginning.
+        let continues = response.status() == reqwest::StatusCode::PARTIAL_CONTENT
+            && resume_from > 0;
+        if !continues {
+            resume_from = 0;
+        }
+
+        let mut sink = if continues {
+            tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(&part)
+                .await
+        } else {
+            tokio::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&part)
+                .await
+        }
+        .map_err(|source| TtsError::io(&part, source))?;
+
+        let mut received = resume_from;
+        while let Some(chunk) = response.chunk().await.map_err(|err| {
+            TtsError::Engine(format!("failed to download `{}`: {err}", file.path))
+        })? {
+            tokio::io::AsyncWriteExt::write_all(&mut sink, &chunk)
+                .await
+                .map_err(|source| TtsError::io(&part, source))?;
+            received += chunk.len() as u64;
+            if let Some(tracker) = tracker {
+                let total = written + received;
+                tracker.update(&spec.id, |progress| progress.bytes = total);
+            }
+        }
+
+        tokio::io::AsyncWriteExt::flush(&mut sink)
+            .await
+            .map_err(|source| TtsError::io(&part, source))?;
+        drop(sink);
+
+        // A file that is shorter than announced is broken, the next attempt
+        // downloads it again.
+        if let Some(expected) = file.size {
+            if received != expected {
+                let _ = std::fs::remove_file(&part);
+                return Err(TtsError::Engine(format!(
+                    "failed to download `{}`: the hub delivered {} bytes instead of {}",
+                    file.path, received, expected
+                )));
+            }
+        }
+
+        std::fs::rename(&part, destination).map_err(|source| TtsError::Io {
+            path: destination.to_path_buf(),
+            source,
+        })?;
+
+        Ok(received)
+    }
+
     /// Removes the checkpoint from the disk.
     pub fn uninstall(&self, spec: &TTSModelSpec) -> TtsResult<()> {
         let directory = self.target_dir(spec);
+        tracing::warn!(
+            model = %spec.id,
+            path = %directory.display(),
+            "removing the checkpoint from the disk"
+        );
         if directory.exists() {
             std::fs::remove_dir_all(&directory).map_err(|source| TtsError::Io {
                 path: directory.clone(),
@@ -310,6 +415,15 @@ impl ModelInstaller {
             None => request,
         }
     }
+}
+
+/// The path of the temporary file that carries a running download.
+fn part_path(destination: &Path) -> PathBuf {
+    let name = destination
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "download".to_string());
+    destination.with_file_name(format!("{name}.part"))
 }
 
 /// Files that are only demonstration material and are not needed to run the

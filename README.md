@@ -7,9 +7,9 @@ The subsystem is a Rust workspace with three crates:
 | Crate | Purpose |
 |---|---|
 | `crates/ai-scheduler` | The **global** hardware scheduler. Every model runtime — LLM, TTS, later diffusion — registers here and competes for one memory pool. |
-| `crates/tts-core` | The TTS subsystem: model registry, engine adapters, runtime manager, voice library, audio manager. |
+| `crates/tts-core` | The TTS subsystem: model registry, engine adapters, runtime manager, engine assets, voice library, audio manager. |
 | `crates/tts-server` | HTTP API (OpenAI compatible + internal extensions) and a command line interface. |
-| `apps/desktop` | The Tauri desktop application with the three pages of §9. |
+| `apps/desktop` | The Tauri desktop application: the model / runtime / service / settings pages of the paper-workbench UI. |
 
 ```
 apps/desktop (Tauri)                HTTP client / CLI
@@ -74,7 +74,7 @@ All state lives in `~/.local-ai-manager` (override with `--data-dir` or
 | §6 Voice library | `tts-core/src/voice/` — profile with `engine_config` kept verbatim, samples stored next to the profile, independent of any running model |
 | §7 Unified TTS API | `TTSRequest` / `EngineSpecificParameters` in `tts-core/src/types.rs`; OpenAI compatible route `POST /v1/audio/speech` |
 | §8 Global VRAM scheduling | `crates/ai-scheduler` — one pool, LRU eviction, pin, TTL sweeper, timeouts, `MemoryLease` |
-| §9 Desktop UI | `apps/desktop` — a Tauri application with the TTS Model Hub, the Voice Library and the Voice Design Studio |
+| §9 Desktop UI | `apps/desktop` — a Tauri application with the 模型 / 运行时 / 服务 / 设置 pages, following the design system in `designs/index.html` |
 | §10 M1 scope | See the status table at the end |
 | §11 Hardware compatibility | `tts-core/src/hardware.rs` + `registry::check_compatibility` — Drama 3 is refused on machines without CUDA |
 | §11 Model installation | `tts-core/src/installer.rs` — the checkpoints are downloaded from the Hugging Face Hub, the compatibility is checked **before** the download starts |
@@ -126,6 +126,7 @@ pinned == false AND active_requests == 0 AND idle_duration > TTL
 | `qwen3-tts-1.7b-customvoice` | Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | 4.2 GiB / 8 GiB | Built-in speakers (`Vivian`, `Ryan`, …) |
 | `qwen3-tts-1.7b-base` | Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | 4.2 GiB / 8 GiB | Voice cloning, needs a reference clip |
 | `qwen3-tts-0.6b-base` | Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | 2.3 GiB / 4 GiB | Voice cloning, needs a reference clip |
+| `qwen3-tts-0.6b-customvoice-mlx` | Qwen3-TTS | `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` | 2.3 GiB / 8 GiB | Apple Silicon, native MLX runtime (`qwen3_tts_server`) |
 | `drama-3` | Drama 3 | `fishaudio/drama-3` | 38.7 GiB / 45 GiB | CUDA only, 37 GB of weights |
 | `drama-3-int4` | Drama 3 | `fishaudio/drama-3-int4` | 22.4 GiB / 28 GiB | GPTQ, needs compute capability 8.0+ |
 | `drama-3-mlx-4bit` | Drama 3 | `mlx-community/fish-audio-drama-3-4bit` | 22.1 GiB / 29 GiB | Apple Silicon, native MLX runtime |
@@ -157,9 +158,79 @@ hf download Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
 sgl-omni serve --model-path Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign --port 8000
 ```
 
-The runtime manager starts and stops the engine itself; the binaries are
-looked up in `PATH` (`sgl-omni` for the CUDA path,
-`fishaudio_drama3_server` for the native MLX path).
+The runtime manager starts and stops the engine itself. The binary is
+resolved through the engine assets (see below) and falls back to `PATH`
+(`sgl-omni` for the CUDA path, `fishaudio_drama3_server` for the native MLX
+path).
+
+### Managing the engines
+
+The engines themselves are assets that the manager owns: which versions
+exist, which one is installed and which one is active.
+
+```bash
+tts-server engines list
+tts-server engines versions llama.cpp
+tts-server engines install llama.cpp b12110
+tts-server engines use llama.cpp b12109
+tts-server engines uninstall llama.cpp b12110
+```
+
+| Engine | Platform | Delivery | Source |
+|---|---|---|---|
+| `llama.cpp` | macOS, Linux | native binary | GitHub Releases (`ggml-org/llama.cpp`) |
+| `mlx` | macOS arm64 | Python package | PyPI (`mlx-lm`) |
+| `sglang-omni` | Linux | Python package (CUDA) | PyPI (`sglang-omni`) |
+| `sglang-omni` | macOS arm64 | source installation (MPS) | `sgl-project/sglang-omni` + `install.sh` |
+| `sglang-omni-mlx` | macOS arm64 | source build (native MLX) | `sgl-project/sglang-omni` + `build_runtime.sh` |
+
+The delivery of an engine depends on the platform, because the upstream
+project ships the Apple Silicon paths differently from the CUDA one:
+
+* **CUDA** — `sglang-omni` is a wheel on PyPI that pulls the CUDA build of
+  PyTorch.
+* **Apple Silicon (MPS)** — the wheel is CUDA only, so the engine is built
+  from a checkout of the repository: `install.sh` creates a Python 3.12
+  environment (`.venv-apple`), installs `ffmpeg@7` and `uv` with Homebrew and
+  installs SGLang from source with the `all_mps` extra.
+* **Apple Silicon (native MLX)** — the TTS models are served by the C++
+  runtime of the repository. `build_runtime.sh` creates a Python 3.12
+  environment with the pinned `mlx` build and compiles the servers with
+  CMake and Ninja; the result contains `fishaudio_drama3_server`,
+  `qwen3_tts_server` and the other model servers. It needs neither CUDA nor
+  PyTorch. The release tags do not carry the servers of the newest models
+  yet, so this runtime follows the `main` branch.
+
+The native runtime serves one server per model family, the engine id of the
+model decides which one is started: `fishaudio-drama3-mlx` →
+`fishaudio_drama3_server`, `sglang-omni-mlx` → `qwen3_tts_server`. The
+`qwen3-tts-0.6b-customvoice-mlx` checkpoint is the Qwen3-TTS model that the
+native runtime can serve, it works without CUDA and without PyTorch. The
+PyTorch path (`sgl-omni serve`) crashes inside the MPS kernels on this
+machine, the native path is the one that runs.
+
+The available versions are fetched live from GitHub Releases, from the GitHub
+tags (the source builds) or from the PyPI JSON API; llama.cpp marks its
+build tags as pre-releases, those are the normal release channel. The
+installation is *managed*: it happens inside the data directory, several
+versions can live side by side and the active one is switched without
+touching the others.
+
+```
+~/.local-ai-manager/runtimes/
+  engines.json                     # manifest: installed versions + active one
+  engines/llama.cpp/b12110/        # one directory per installed version
+  engines/mlx/0.32.2/venv/         # virtual environment of the Python engines
+  engines/sglang-omni-mlx/v0.2.0/  # checkout, build directory and runtime
+```
+
+llama.cpp is downloaded from the release asset that matches the platform
+(`macos-arm64`, `macos-x64`, `ubuntu-x64`, `ubuntu-arm64`) and unpacked; the
+Python engines get a virtual environment and `pip install <package>==<version>`;
+the source installations download the archive of a tag, unpack it and run the
+install script of the repository. The installation runs in the background,
+the progress is polled through `GET /v1/runtimes/{id}/install-progress` and
+the output of `pip` or of the build script is streamed into the log.
 
 ### Installing the checkpoints
 
@@ -191,7 +262,8 @@ the engine to time out.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | Liveness and free memory |
-| `GET` | `/v1/tts/models`, `/v1/models` | Model catalog with compatibility and runtime state |
+| `GET` | `/v1/models` | The models the server can serve: the checkpoint is on the disk and the machine can run it |
+| `GET` | `/v1/tts/models` | The full catalog with compatibility and runtime state, including the models that are not downloaded yet |
 | `GET` | `/v1/tts/status` | Runtime states, scheduler snapshot, hardware profile |
 | `POST` | `/v1/audio/speech` | **OpenAI compatible** synthesis |
 | `POST` | `/v1/tts/speak` | Synthesis with the engine specific parameters |
@@ -205,8 +277,16 @@ the engine to time out.
 | `POST` | `/v1/tts/models/{id}/load` \| `/unload` \| `/pin` \| `/unpin` | Runtime lifecycle |
 | `POST` | `/v1/tts/models/{id}/install` | Starts the download of the checkpoint (`202 Accepted`) |
 | `GET` | `/v1/tts/models/{id}/install` | Progress of the download |
-| `POST` | `/v1/tts/models/{id}/uninstall` | Removes the checkpoint from the disk |
-| `GET` | `/v1/tts/models/{id}/logs` | Engine log of the running model |
+| `POST` | `/v1/tts/models/{id}/uninstall` | Removes the checkpoint from the disk; refused for a running model |
+| `GET` | `/v1/tts/models/{id}/logs` | Engine log of the model: the running one or the last start attempt |
+| `GET` | `/v1/runtimes` | The inference engines and their installation state |
+| `GET` | `/v1/runtimes/{id}` | One engine with its installed versions |
+| `GET` | `/v1/runtimes/{id}/versions` | Versions that can be installed (GitHub Releases / PyPI) |
+| `POST` | `/v1/runtimes/{id}/install` | Starts the installation of an engine version (`202 Accepted`) |
+| `GET` | `/v1/runtimes/{id}/install-progress` | Progress of the engine installation |
+| `POST` | `/v1/runtimes/{id}/activate` | Switches to another installed version |
+| `POST` | `/v1/runtimes/{id}/uninstall` | Removes an installed version from the disk |
+| `POST` | `/v1/runtimes/{id}/health` | Starts the engine service and probes `/health` |
 | `GET` | `/v1/audio/{file}` | Download generated audio |
 
 ### OpenAI compatible synthesis
@@ -275,6 +355,7 @@ Understood keys of `engine_config`:
 tts-server doctor                                   # hardware and compatibility
 tts-server models list|show|load|unload|pin|unpin|logs|install|uninstall
 tts-server voices list|design|clone|remove
+tts-server engines list|versions|install|use|uninstall
 tts-server speak --model qwen3-tts --text "你好" --voice voice_001 --out hi.wav
 tts-server play hi.wav
 tts-server status
@@ -320,16 +401,22 @@ npm run tauri:build    # bundles Local AI Manager.app
 The window starts the `tts-server` backend itself (free port, background
 process, log file in `logs/tts/desktop-server.log`) and stops it when the
 window closes — the backend follows the life cycle of the desktop process
-through a pipe, so no orphan process is left behind. The three pages of §9 are implemented against the HTTP API:
+through a pipe, so no orphan process is left behind. The window follows the
+paper workbench design of `designs/index.html` and implements four pages
+against the HTTP API:
 
-* **TTS Model Hub** — name, version, size, format, memory estimate, running
-  state, Load / Unload, Pin, installation state with download and the engine
-  log.
-* **Voice Library** — name, description, model, sample player, creation time,
-  editing and deletion, filtered by model and language.
-* **Voice Design Studio** — description → model → generated sample → audition
-  and rating → adjusted prompt → saved profile, with the same description
-  rendered by several models for comparison.
+* **模型 / MODELS** — the registry split into *发现模型* and *已下载*, the
+  download queue with progress in bytes, compatibility, Load / Unload, Pin
+  and the model log. Deleting a checkpoint asks a second time, it removes
+  gigabytes from the disk.
+* **运行时 / ENGINES** — the inference engines (llama.cpp, MLX,
+  SGLang-Omni, native MLX runtime) as real assets: the versions that can be installed, the
+  managed installation, the version switch, the removal and the health check
+  that starts the service and probes `/health`.
+* **服务 / ENDPOINTS** — the local gateway, its routes, the running
+  instances and the event stream.
+* **设置 / PREFERENCES** — the backend connection, the appearance and the
+  local storage.
 
 ## Status of the M1 scope
 

@@ -43,25 +43,33 @@ fn server_binary(app: &AppHandle) -> Result<PathBuf, String> {
         ));
     }
 
-    // Development: the workspace target directory.
+    // Development: the workspace target directory. Several copies can exist —
+    // the one the backend workspace produced and the one Tauri copied next to
+    // the application — so the newest one wins.
+    let mut development: Vec<PathBuf> = Vec::new();
     if let Ok(current) = std::env::current_exe() {
         let mut root = current.as_path();
         while let Some(parent) = root.parent() {
             for profile in ["release", "debug"] {
-                let candidate = parent.join("target").join(profile).join(BINARY);
-                if candidate.exists() {
-                    return Ok(candidate);
-                }
+                development.push(parent.join("target").join(profile).join(BINARY));
+                development.push(parent.join(profile).join(BINARY));
             }
             root = parent;
         }
     }
+    development.sort_by_key(|candidate| {
+        std::fs::metadata(candidate)
+            .and_then(|meta| meta.modified())
+            .ok()
+    });
+    development.reverse();
+    development.retain(|candidate| candidate.exists());
+    let mut candidates: Vec<PathBuf> = development;
 
     // Packaged application: the sidecar that Tauri bundled. Depending on the
     // platform it sits next to the executable or inside the resource
     // directory, with or without the target triple in its name.
     let triple = format!("{}-{}", std::env::consts::ARCH, platform_triple());
-    let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(directory) = app.path().resource_dir() {
         candidates.push(
             directory
@@ -82,6 +90,8 @@ fn server_binary(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
 
+    // The newest copy wins: the backend workspace and the desktop directory
+    // can both hold a build, and only one of them is current.
     for candidate in candidates {
         if candidate.exists() {
             return Ok(candidate);

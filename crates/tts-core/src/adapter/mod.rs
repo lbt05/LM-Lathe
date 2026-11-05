@@ -68,6 +68,14 @@ pub trait TTSAdapter: Send + Sync {
 
     /// Returns the engine logs.
     async fn get_logs(&self, handle: &RuntimeHandle) -> TtsResult<String>;
+
+    /// Returns the log of the last start attempt of a model.
+    ///
+    /// A model that could not be loaded has no runtime, but the engine wrote
+    /// the reason of the failure into its log.
+    fn logs_for(&self, _model_id: &str) -> String {
+        String::new()
+    }
 }
 
 /// Service level operations of an inference engine.

@@ -669,7 +669,9 @@ impl Inner {
             Some(active) if active.model_id == model_id => {
                 active.adapter.get_logs(&active.handle).await
             }
-            _ => Ok(String::new()),
+            // The model is not running: the log of the last start attempt
+            // still holds the reason of the failure.
+            _ => Ok(self.factory.logs_for(model_id)),
         }
     }
 

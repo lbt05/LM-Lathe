@@ -148,9 +148,34 @@ Runtime Manager
     |
     +-- TTS Runtime
            +-- SGLang-Omni
-                  +-- Qwen3-TTS
+           |      +-- Qwen3-TTS
+           |      +-- Drama 3
+           +-- SGLang-Omni 原生 MLX（Apple Silicon）
                   +-- Drama 3
+                  +-- Qwen3-TTS（0.6B CustomVoice，MLX 权重）
 ```
+
+同一引擎在不同平台上的分发方式不同，由引擎资产管理器负责：
+
+| 引擎 | 平台 | 分发 |
+|---|---|---|
+| llama.cpp | macOS / Linux | GitHub Release 的原生二进制 |
+| MLX | macOS arm64 | PyPI 的 `mlx-lm`，装进独立虚拟环境 |
+| SGLang-Omni | Linux | PyPI 的 `sglang-omni`（CUDA wheel） |
+| SGLang-Omni | macOS arm64 | 仓库源码安装：`install.sh` 建 Python 3.12 环境并装 SGLang 的 MPS 版本 |
+| SGLang-Omni 原生 MLX | macOS arm64 | 仓库源码构建：`build_runtime.sh` 用 CMake/Ninja 编译出各模型的 C++ 服务二进制 |
+
+Apple Silicon 上的 TTS 模型由原生 MLX 运行时服务（`fishaudio_drama3_server`、
+`qwen3_tts_server`），它不需要 CUDA、PyTorch 或 Python 运行时；发布标签里
+还没有这两个服务，所以原生运行时跟随仓库的主分支。原生运行时按模型家族提供
+服务二进制，模型所属的引擎 id 决定启动哪一个：`fishaudio-drama3-mlx` 用
+`fishaudio_drama3_server`，`sglang-omni-mlx` 用 `qwen3_tts_server`。
+
+在这台 Mac 上 PyTorch（MPS）路径会在加载语音 tokenizer 时触发 MPS 内核的
+段错误（`Process pipeline died during startup (exit code -11)`），所以
+Qwen3-TTS 在 Apple Silicon 上走原生 MLX 路径：模型目录里的
+`qwen3-tts-0.6b-customvoice-mlx`（`mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16`）
+是原生运行时能服务的 Qwen3-TTS 权重。
 
 TTS Runtime Manager 负责：
 

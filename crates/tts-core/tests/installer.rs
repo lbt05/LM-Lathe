@@ -26,6 +26,16 @@ fn fake_hub() -> (String, thread::JoinHandle<()>) {
             let read = stream.read(&mut buffer).unwrap_or(0);
             let request = String::from_utf8_lossy(&buffer[..read]).to_string();
             let target = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+            let range = request
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    if name.trim().eq_ignore_ascii_case("range") {
+                        Some(value.trim().to_string())
+                    } else {
+                        None
+                    }
+                });
 
             let (status, content_type, body) = if target.contains("does/not-exist") {
                 ("404 Not Found", "text/plain", "missing".to_string())
@@ -38,7 +48,20 @@ fn fake_hub() -> (String, thread::JoinHandle<()>) {
             } else if target.ends_with("/config.json") {
                 ("200 OK", "application/json", "{\"a\":1}".to_string())
             } else if target.ends_with("/model.safetensors") {
-                ("200 OK", "application/octet-stream", "hello".to_string())
+                // The hub continues a download when the client asks for a
+                // range.
+                let body = "hello";
+                match range.as_deref().and_then(|value| value.strip_prefix("bytes=")) {
+                    Some(start) => {
+                        let start: usize = start.trim_end_matches('-').parse().unwrap_or(0);
+                        (
+                            "206 Partial Content",
+                            "application/octet-stream",
+                            body[start.min(body.len())..].to_string(),
+                        )
+                    }
+                    None => ("200 OK", "application/octet-stream", body.to_string()),
+                }
             } else {
                 ("404 Not Found", "text/plain", "missing".to_string())
             };
@@ -137,6 +160,51 @@ async fn an_existing_checkpoint_is_not_downloaded_again() {
     assert!(second.downloaded.is_empty());
     assert_eq!(second.skipped.len(), 2);
     assert_eq!(second.bytes, 0);
+}
+
+#[tokio::test]
+async fn the_progress_is_measured_in_bytes() {
+    let dir = TempDir::new("installer");
+    let (endpoint, _hub) = fake_hub();
+    let installer = ModelInstaller::new(dir.path().join("models/tts")).with_endpoint(&endpoint);
+    let tracker = InstallTracker::default();
+
+    tracker.start("qwen3-tts-1.7b-voicedesign");
+    installer
+        .install(&spec(), Some(&tracker))
+        .await
+        .expect("the installation failed");
+
+    let progress = tracker.get("qwen3-tts-1.7b-voicedesign").unwrap();
+    // The demo video is skipped, so the two remaining files count.
+    assert_eq!(progress.files_total, 2);
+    assert_eq!(progress.files_done, 2);
+    // `config.json` holds 7 bytes, `model.safetensors` 5.
+    assert_eq!(progress.bytes_total, 12);
+    assert_eq!(progress.bytes, 12);
+}
+
+#[tokio::test]
+async fn an_interrupted_download_is_continued() {
+    let dir = TempDir::new("installer");
+    let (endpoint, _hub) = fake_hub();
+    let installer = ModelInstaller::new(dir.path().join("models/tts")).with_endpoint(&endpoint);
+
+    installer.install(&spec(), None).await.unwrap();
+    let target = installer.target_dir(&spec());
+
+    // The download of the weights stopped after three bytes.
+    std::fs::remove_file(target.join("model.safetensors")).unwrap();
+    std::fs::write(target.join("model.safetensors.part"), b"hel").unwrap();
+
+    installer.install(&spec(), None).await.unwrap();
+
+    // The file was continued and not downloaded a second time.
+    assert_eq!(
+        std::fs::read(target.join("model.safetensors")).unwrap(),
+        b"hello"
+    );
+    assert!(!target.join("model.safetensors.part").exists());
 }
 
 #[tokio::test]

@@ -1,134 +1,202 @@
-import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { api, setBaseUrl, type Model } from "./api";
-import ModelHub from "./pages/ModelHub";
-import VoiceLibrary from "./pages/VoiceLibrary";
-import VoiceStudio from "./pages/VoiceStudio";
+import { useEffect, useState } from "react";
+import { StoreProvider, useStore, type View } from "./store";
+import { Icon } from "./ui";
+import Models, { ModelInspector } from "./pages/Models";
+import Runtimes, { RuntimeInspector } from "./pages/Runtimes";
+import Services, { ServiceInspector } from "./pages/Services";
+import Settings from "./pages/Settings";
 
-type Page = "hub" | "voices" | "studio";
-
-const TABS: { id: Page; label: string }[] = [
-  { id: "hub", label: "TTS 模型中心" },
-  { id: "voices", label: "声音库" },
-  { id: "studio", label: "声音设计工作台" },
+/** The navigation entries, grouped exactly like the design export. */
+const NAV: {
+  id: View;
+  label: string;
+  icon: string;
+  group: string;
+  count?: (running: number) => number | null;
+}[] = [
+  { id: "models", label: "模型", icon: "cube", group: "资产" },
+  { id: "runtime", label: "运行时", icon: "layers", group: "资产" },
+  {
+    id: "services",
+    label: "服务",
+    icon: "play",
+    group: "运行",
+    count: (running) => running,
+  },
+  { id: "settings", label: "设置", icon: "sliders", group: "系统" },
 ];
+
+const PAGES: Record<View, { title: string; sub: string }> = {
+  models: { title: "模型", sub: "MODELS" },
+  runtime: { title: "运行时", sub: "ENGINES" },
+  services: { title: "服务", sub: "ENDPOINTS" },
+  settings: { title: "设置", sub: "PREFERENCES" },
+};
 
 /** `true` when the frontend runs inside the Tauri webview. */
 function inTauri() {
   return "__TAURI_INTERNALS__" in window;
 }
 
-export default function App() {
-  const [page, setPage] = useState<Page>("hub");
-  const [base, setBase] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const [models, setModels] = useState<Model[]>([]);
-  const [manualUrl, setManualUrl] = useState("http://127.0.0.1:8080");
+function Shell() {
 
-  /** Starts the backend and waits until it answers. */
-  const start = useCallback(async () => {
-    setStarting(true);
-    setError(null);
-    try {
-      let url: string;
-      if (inTauri()) {
-        url = await invoke<string>("start_server");
-      } else {
-        url = manualUrl;
-      }
-      setBaseUrl(url);
+  const store = useStore();
+  const [query, setQuery] = useState("");
 
-      // Wait for the server to accept requests.
-      const deadline = Date.now() + 30_000;
-      for (;;) {
-        try {
-          await api.health();
-          break;
-        } catch (err) {
-          if (Date.now() > deadline) throw err;
-          await new Promise((resolve) => window.setTimeout(resolve, 250));
-        }
-      }
-
-      setBase(url);
-      setModels(await api.models());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setStarting(false);
-    }
-  }, [manualUrl]);
-
+  // The model search lives in the top bar, so it has to survive page switches.
   useEffect(() => {
-    void start();
-  }, [start]);
+    if (store.view !== "models") setQuery("");
+  }, [store.view]);
 
-  const refreshModels = useCallback(async () => {
-    if (!base) return;
-    try {
-      setModels(await api.models());
-    } catch {
-      // the status bar shows the error
-    }
-  }, [base]);
+  const running =
+    store.status?.runtimes.filter((runtime) => runtime.state === "running")
+      .length ?? 0;
+
+  const groups = NAV.reduce<{ name: string; items: typeof NAV }[]>((acc, item) => {
+    const last = acc[acc.length - 1];
+    if (last && last.name === item.group) last.items.push(item);
+    else acc.push({ name: item.group, items: [item] });
+    return acc;
+  }, []);
+
+  const page = PAGES[store.view];
 
   return (
-    <div className="app">
-      <nav className="sidebar">
-        <div className="brand">
-          <div className="brand-title">本地 AI 工作台</div>
-          <div className="muted small">TTS 子系统 · Milestone 1</div>
-        </div>
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            className={`nav-item ${page === tab.id ? "active" : ""}`}
-            onClick={() => setPage(tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
-        <div className="sidebar-footer">
-          {base ? (
-            <>
-              <div className="badge ok">服务运行中</div>
-              <div className="muted small">{base}</div>
-            </>
-          ) : (
-            <div className="badge bad">服务未连接</div>
-          )}
-          <button onClick={() => void start()} disabled={starting}>
-            {starting ? "启动中…" : "重新连接"}
-          </button>
-        </div>
-      </nav>
+    <div
+      className={`app${store.inspector ? " has-insp" : ""}${
+        inTauri() ? " is-tauri" : ""
+      }`}
+    >
+      <header className="titlebar" data-tauri-drag-region>
+        <span className="lights" data-tauri-drag-region>
+          <i />
+          <i />
+          <i />
+        </span>
+        <span className="titlebar__name" data-tauri-drag-region>
+          LM Lathe
+        </span>
+        <span className="titlebar__ctx" data-tauri-drag-region>
+          {store.base ?? "未连接"}
+        </span>
+      </header>
 
-      <main className="content">
-        {error && (
-          <div className="alert error">
-            {error}
-            {!inTauri() && (
-              <div className="field">
+      <aside className="rail">
+        <nav>
+          {groups.map((group) => (
+            <div className="rail__grp" key={group.name}>
+              <span className="rail__label eyebrow">{group.name}</span>
+              {group.items.map((item) => {
+                const count = item.count?.(running) ?? null;
+                return (
+                  <button
+                    className="rail__item"
+                    type="button"
+                    key={item.id}
+                    aria-current={store.view === item.id ? "page" : "false"}
+                    title={item.label}
+                    onClick={() => store.setView(item.id)}
+                  >
+                    <Icon name={item.icon} />
+                    <span>{item.label}</span>
+                    {count !== null ? (
+                      <span className="rail__count">{count}</span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+        <div className="rail__foot">
+          <span className="rail__status">
+            <span
+              className="rail__dot"
+              data-tone={store.error ? "bad" : store.starting ? "warn" : undefined}
+            />
+            <span>
+              {store.error
+                ? "daemon · 异常"
+                : store.starting
+                  ? "daemon · 启动中"
+                  : store.base
+                    ? "daemon · 正常"
+                    : "daemon · 未连接"}
+            </span>
+          </span>
+        </div>
+      </aside>
+
+      <main className="main">
+        <div className="topbar">
+          <span className="topbar__title">{page.title}</span>
+          <span className="topbar__sub">{page.sub}</span>
+          <span className="od-fill" />
+          <span className="topbar__tools">
+            {store.view === "models" ? (
+              <span className="search">
+                <Icon name="search" />
                 <input
-                  value={manualUrl}
-                  onChange={(event) => setManualUrl(event.target.value)}
-                  placeholder="http://127.0.0.1:8080"
+                  type="search"
+                  value={query}
+                  placeholder="搜索模型…"
+                  aria-label="搜索模型"
+                  onChange={(event) => setQuery(event.target.value)}
                 />
-                <button onClick={() => void start()}>连接</button>
-              </div>
+              </span>
+            ) : (
+              <button
+                className="btn btn--ghost"
+                type="button"
+                onClick={() => void store.refresh()}
+              >
+                <Icon name="refresh" />
+                刷新
+              </button>
             )}
+          </span>
+        </div>
+        <div className="scroll">
+          <div className="view">
+            {store.view === "models" && (
+              <Models query={query} onQueryChange={setQuery} />
+            )}
+            {store.view === "runtime" && <Runtimes />}
+            {store.view === "services" && <Services />}
+            {store.view === "settings" && <Settings />}
           </div>
-        )}
-
-        {page === "hub" && <ModelHub />}
-        {page === "voices" && (
-          <VoiceLibrary models={models} />
-        )}
-        {page === "studio" && (
-          <VoiceStudio models={models} onSaved={() => void refreshModels()} />
-        )}
+        </div>
       </main>
+
+      {store.inspector ? (
+        <aside className="insp">
+          {store.inspector.kind === "model" && (
+            <ModelInspector id={store.inspector.id} tab={store.inspector.tab} />
+          )}
+          {store.inspector.kind === "runtime" && (
+            <RuntimeInspector id={store.inspector.id} tab={store.inspector.tab} />
+          )}
+          {store.inspector.kind === "service" && (
+            <ServiceInspector id={store.inspector.id} tab={store.inspector.tab} />
+          )}
+        </aside>
+      ) : null}
+
+      <div className="toasts">
+        {store.toasts.map((toast) => (
+          <div className="toast" data-tone={toast.tone} key={toast.id}>
+            {toast.text}
+          </div>
+        ))}
+      </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <StoreProvider>
+      <Shell />
+    </StoreProvider>
   );
 }

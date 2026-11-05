@@ -10,15 +10,18 @@ description = "TTS subsystem of the local AI runtime manager: model registry, en
 ai-scheduler.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+flate2.workspace = true
 hound.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sysinfo.workspace = true
+tar.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "process", "fs", "io-util", "sync", "time", "net"] }
 tracing.workspace = true
 uuid.workspace = true
+zip.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

@@ -9,6 +9,21 @@ use tower::ServiceExt;
 use tts_core::paths::AppPaths;
 use tts_core::service::TtsService;
 
+/// Makes the names of the temporary directories unique.
+///
+/// The clock of the operating system is not precise enough: two threads can
+/// read the same timestamp, and the tests that run in parallel would then
+/// share one directory and delete it from under each other.
+fn unique_suffix() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let sequence = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{now}-{sequence}")
+}
+
 /// A temporary directory that removes itself when it is dropped.
 struct TempDir {
     path: PathBuf,
@@ -16,11 +31,7 @@ struct TempDir {
 
 impl TempDir {
     fn new(prefix: &str) -> Self {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("{prefix}-{unique}"));
+        let path = std::env::temp_dir().join(format!("{prefix}-{}", unique_suffix()));
         std::fs::create_dir_all(&path).unwrap();
         Self { path }
     }
@@ -237,6 +248,48 @@ async fn a_model_can_be_loaded_and_pinned() {
 }
 
 #[tokio::test]
+async fn a_builtin_model_cannot_be_deleted() {
+    let dir = TempDir::new("api");
+    let router = router(&dir);
+
+    let (status, body) = post_json(
+        router.clone(),
+        "/v1/tts/models/mock-echo/uninstall",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("内置于应用"),
+        "the message does not explain the refusal: {json}"
+    );
+}
+
+#[tokio::test]
+async fn the_mlx_checkpoint_of_qwen3_tts_is_part_of_the_catalogue() {
+    let dir = TempDir::new("api");
+    let router = router(&dir);
+
+    let (status, body) = get(router, "/v1/tts/models").await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    let mlx = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["id"] == "qwen3-tts-0.6b-customvoice-mlx")
+        .expect("the MLX checkpoint of Qwen3-TTS is missing in the catalogue");
+    assert_eq!(mlx["engine_id"], "sglang-omni-mlx");
+    assert_eq!(mlx["hf_repo"], "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16");
+}
+
+#[tokio::test]
 async fn a_generated_sample_can_be_downloaded() {
     let dir = TempDir::new("api");
     let router = router(&dir);
@@ -255,6 +308,32 @@ async fn a_generated_sample_can_be_downloaded() {
     assert_eq!(status, StatusCode::OK);
     let bytes = body.collect().await.unwrap().to_bytes();
     assert_eq!(&bytes[0..4], b"RIFF");
+}
+
+#[tokio::test]
+async fn only_the_models_that_can_be_served_are_listed() {
+    let dir = TempDir::new("api");
+    let (status, body) = get(router(&dir), "/v1/models").await;
+    assert_eq!(status, StatusCode::OK);
+    let models: Vec<serde_json::Value> =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+
+    // The mock engine is part of the application, so the server can serve it.
+    assert!(models.iter().any(|model| model["id"] == "mock-echo"));
+
+    // The checkpoints of the other models are not on the disk yet.
+    assert!(!models
+        .iter()
+        .any(|model| model["id"] == "qwen3-tts-1.7b-voicedesign"));
+
+    // The catalogue keeps them.
+    let (status, body) = get(router(&dir), "/v1/tts/models").await;
+    assert_eq!(status, StatusCode::OK);
+    let catalogue: Vec<serde_json::Value> =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert!(catalogue
+        .iter()
+        .any(|model| model["id"] == "qwen3-tts-1.7b-voicedesign"));
 }
 
 #[tokio::test]
