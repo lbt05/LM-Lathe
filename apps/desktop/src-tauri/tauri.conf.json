@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "LM Lathe",
+        "title": "LM-Lathe",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "width": 1320,
@@ -41,6 +41,6 @@
     "copyright": "",
     "category": "DeveloperTool",
     "shortDescription": "本地 AI 模型资产管理与显存动态调度系统",
-    "longDescription": "TTS 子系统：模型中心、声音库与声音设计工作台。"
+    "longDescription": "本机 AI 模型资产管理与内存动态调度：模型中心、运行时管理与本地网关。"
   }
 }

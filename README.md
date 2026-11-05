@@ -1,481 +1,247 @@
-# Local AI Manager — TTS Subsystem
+# LM-Lathe
 
-Implementation of the TTS subsystem described in [`todo.md`](./todo.md) (Milestone 1).
+本机 AI 运行时管理器。一个应用里下载、加载、运行 **TTS** 与 **LLM** 模型，用统一的内存调度器分配资源，并通过 OpenAI 兼容的 HTTP 接口对外提供语音合成与对话能力。
 
-The subsystem is a Rust workspace with three crates:
+桌面端是 Tauri 应用（四个页面：模型 / 运行时 / 服务 / 设置），后端是 Rust workspace，配一个命令行工具。所有数据留在本机，不上传任何内容。
 
-| Crate | Purpose |
+---
+
+## 功能
+
+| 领域 | 能做什么 |
 |---|---|
-| `crates/ai-scheduler` | The **global** hardware scheduler. Every model runtime — LLM, TTS, later diffusion — registers here and competes for one memory pool. |
-| `crates/tts-core` | The TTS subsystem: model registry, engine adapters, runtime manager, engine assets, voice library, audio manager. |
-| `crates/tts-server` | HTTP API (OpenAI compatible + internal extensions) and a command line interface. |
-| `apps/desktop` | The Tauri desktop application: the model / runtime / service / settings pages of the paper-workbench UI. |
+| **模型** | 12 个内置模型（Qwen3-TTS、Fish Audio Drama 3、GGUF 语言模型），加上 Hugging Face 实时搜索——只列出当前运行时真能跑的仓库 |
+| **下载** | 断点续传、**字节级**进度条、并行下载（1–8 个文件）、失败重试、删除前二次确认 |
+| **运行时** | 4 个引擎当作真实资产管理：安装、切换版本、卸载、健康检查（真启动服务探 `/health`） |
+| **加载** | 按需加载 / 卸载 / 固定；全局调度器按内存占用分配，LRU + TTL 自动回收 |
+| **语音** | `POST /v1/audio/speech`（OpenAI 兼容），支持 Qwen3-TTS 的声音设计与克隆、Drama 3 的多角色 |
+| **对话** | `POST /v1/chat/completions`、`/v1/completions`（OpenAI 兼容），llama.cpp 跑 GGUF |
+| **声音库** | 声音档案存本地，附试听样本；声音设计与克隆走 API 或 CLI |
+| **可观测** | 每个模型的引擎日志，下载进度，运行实例状态，全局调度快照 |
 
-```
-apps/desktop (Tauri)                HTTP client / CLI
-          │                                │
-          └──────────────┬─────────────────┘
-                         ▼
-      TTS Module  ──────────────────  crates/tts-core
-          │
-          ├── Voice Library          crates/tts-core/src/voice
-          ├── TTS Runtime Manager    crates/tts-core/src/runtime.rs
-          │         │
-          │         ├── Global Scheduler      crates/ai-scheduler
-          │         └── Engine Adapter        crates/tts-core/src/adapter
-          │                  └── SGLang-Omni  (sgl-omni serve)
-          └── Audio Manager          crates/tts-core/src/audio.rs
-```
+---
 
-## Quick start
+## 快速开始
 
 ```bash
+# 1. 编译
 cargo build --release
 
-# Inspect the machine and the compatibility of every model
+# 2. 看看这台机器能跑什么
 ./target/release/tts-server doctor
 
-# List the models and whether they are installed
-./target/release/tts-server models list
-
-# Download a checkpoint (the compatibility is checked first)
+# 3. 下载一个模型（会先做兼容性检查）
 ./target/release/tts-server models install qwen3-tts-1.7b-voicedesign
 
-# Speak (the model has to be installed and the engine has to run)
-./target/release/tts-server speak --model qwen3-tts-0.6b-customvoice-mlx --text "你好，世界" --out hello.wav
+# 4. 说一句话
+./target/release/tts-server speak --model qwen3-tts-1.7b-voicedesign --text "你好，世界" --out hello.wav
 
-# Start the HTTP API
+# 5. 起服务
 ./target/release/tts-server serve --port 54321
 ```
 
-The local gateway listens on a fixed port, `54321`, so its URL does not change
-with every restart. `LMLATHE_PORT` moves it. When the port is already taken
-by a server of the same build, the desktop application reuses that server
-instead of starting a second one; when a different build holds the port, the
-application moves to the next free port and shows the URL it uses.
+用桌面端就三步：
 
-All state lives in `~/.local-ai-manager` (override with `--data-dir` or
-`LOCAL_AI_MANAGER_HOME`):
-
-```
-~/.local-ai-manager/
-├── models/{llm,tts}/          model directories
-├── voices/<voice_id>/
-│   ├── profile.json           voice profile
-│   └── samples/               generated samples
-├── audio/generated/           synthesised audio
-└── logs/tts/                  engine logs
+```bash
+cd apps/desktop
+npm install
+npm run tauri:dev
 ```
 
-## How the specification is implemented
+窗口会自己拉起后端、连上、显示四个页面。关窗口，后端跟着退。
 
-| Specification section | Where |
+---
+
+## 构建
+
+### 需要什么
+
+| 依赖 | 版本 | 备注 |
+|---|---|---|
+| Rust | ≥ 1.82 | `rustup` |
+| Node.js | ≥ 20 | 只用于桌面端的前端 |
+| Xcode CLT | — | macOS 上编译 Tauri 外壳需要 |
+| ffmpeg | 可选 | 只有把音频转成 `mp3/flac/opus/aac/ogg` 时才需要 |
+
+### 后端
+
+```bash
+cargo build --release          # 产出 ./target/release/tts-server
+cargo test --workspace         # 76 个测试
+cargo clippy --all-targets
+```
+
+### 桌面应用
+
+```bash
+cd apps/desktop
+npm install
+npm run build                  # TypeScript 检查 + Vite 打包
+npm run tauri:dev              # 开发模式（前端热更新）
+npm run tauri:build            # 打包 .app
+```
+
+`tauri:dev` 和 `tauri:build` 会先跑 `npm run sidecar`：把最新的 `tts-server` 复制成 sidecar 二进制。**改了后端代码，务必重新跑一次**，否则应用还在用旧的二进制。
+
+打包产物在 `apps/desktop/src-tauri/target/release/bundle/macos/LM-Lathe.app`。
+
+---
+
+## 使用
+
+### 桌面应用的四个页面
+
+| 页面 | 内容 |
 |---|---|
-| §2 SGLang-Omni as inference service | `tts-core/src/adapter/engine.rs` — spawns `sgl-omni serve --model-path … --port …` and waits for `/health` |
-| §2.2 Qwen3-TTS, Fish Audio Drama 3 | `tts-core/src/registry.rs` (catalog), `adapter/qwen3_tts.rs`, `adapter/fish_drama3.rs` |
-| §3 Architecture / module split | `runtime.rs`, `voice/`, `audio.rs`, `adapter/`, `ai-scheduler` |
-| §4 Unified runtime management | `tts-core/src/runtime.rs` — `TTSRuntime`, `RuntimeState` (`Unloaded → Loading → Running → Unloading → Unloaded`, `Failed`), `Pin` as an attribute of the instance |
-| §4.2 One model per engine instance | `Inner::load_model_locked` — the running model is unloaded before another one is started; a *pinned* model is never replaced |
-| §5 Engine adapter | `tts-core/src/adapter/mod.rs` — `TTSAdapter` (public trait) + `EngineAdapter` (service level) + `ModelProtocol` (model level), so the service process is managed exactly once |
-| §6 Voice library | `tts-core/src/voice/` — profile with `engine_config` kept verbatim, samples stored next to the profile, independent of any running model |
-| §7 Unified TTS API | `TTSRequest` / `EngineSpecificParameters` in `tts-core/src/types.rs`; OpenAI compatible route `POST /v1/audio/speech` |
-| §8 Global VRAM scheduling | `crates/ai-scheduler` — one pool, LRU eviction, pin, TTL sweeper, timeouts, `MemoryLease` |
-| §9 Desktop UI | `apps/desktop` — a Tauri application with the 模型 / 运行时 / 服务 / 设置 pages, following the design system in `designs/index.html` |
-| §10 M1 scope | See the status table at the end |
-| §11 Hardware compatibility | `tts-core/src/hardware.rs` + `registry::check_compatibility` — Drama 3 is refused on machines without CUDA |
-| §11 Model installation | `tts-core/src/installer.rs` — the checkpoints are downloaded from the Hugging Face Hub, the compatibility is checked **before** the download starts |
+| **模型** | *发现模型*：Hugging Face 搜索与预置列表，带参数量、文件大小、用途、格式，可排序；*已下载*：本地模型的加载 / 卸载 / 固定 / 删除。下载队列显示字节级进度，可重试 |
+| **运行时** | 4 个引擎的当前版本、可安装版本、安装 / 切版本 / 卸载 / 健康检查；运行实例、内存调度快照、本机硬件 |
+| **服务** | 本地网关的状态、绑定地址、路由数量、运行中的实例；实例日志每 3 秒自动刷新 |
+| **设置** | 后端地址（自动或手填）、监听地址（只允许本机 / 允许局域网）、主题、模型与运行时目录、下载并发 |
 
-### Runtime lifecycle
+深链接：`#/models`、`#/runtime`、`#/services`、`#/settings`。
 
-```
-Unloaded ──load──▶ Loading ──health ok──▶ Running ──unload──▶ Unloading ──▶ Unloaded
-                        │
-                        └──── error ────▶ Failed
-```
-
-Loading a model follows the flow of the specification:
-
-1. resolve the model in the registry and check the hardware compatibility,
-2. take the engine gate (only one model may occupy the engine),
-3. unload the model that currently runs — unless it is pinned,
-4. ask the global scheduler for a memory reservation (other runtimes are
-   evicted in LRU order when needed),
-5. start the engine and wait until it answers `/health`,
-6. mark the runtime as `Running`.
-
-Unloading waits until the model has no in-flight request left, stops the
-process (SIGTERM, then SIGKILL), releases the reservation and removes the
-tenant from the scheduler.
-
-### Global scheduler
-
-`ai-scheduler` implements the constraints of §8.3:
-
-* pinned runtimes are never evicted automatically,
-* a runtime with in-flight requests is never force-unloaded,
-* memory is released only after the process exited,
-* an unsatisfiable reservation fails with an explicit error,
-* reservations support a timeout and cancellation.
-
-TTL defaults to 30 minutes and is evaluated per tenant by the background
-sweeper. A tenant is evicted when
-
-```
-pinned == false AND active_requests == 0 AND idle_duration > TTL
-```
-
-## Model catalog
-
-| Id | Family | Checkpoint | Memory | Notes |
-|---|---|---|---|---|
-| `qwen3-tts-1.7b-voicedesign` | Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` | 4.2 GiB / 8 GiB | Voice Design: `task_type=VoiceDesign` + `instructions` |
-| `qwen3-tts-1.7b-customvoice` | Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | 4.2 GiB / 8 GiB | Built-in speakers (`Vivian`, `Ryan`, …) |
-| `qwen3-tts-1.7b-base` | Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | 4.2 GiB / 8 GiB | Voice cloning, needs a reference clip |
-| `qwen3-tts-0.6b-base` | Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | 2.3 GiB / 4 GiB | Voice cloning, needs a reference clip |
-| `qwen3-tts-0.6b-customvoice-mlx` | Qwen3-TTS | `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` | 2.3 GiB / 8 GiB | Apple Silicon, native MLX runtime (`qwen3_tts_server`) |
-| `drama-3` | Drama 3 | `fishaudio/drama-3` | 38.7 GiB / 45 GiB | CUDA only, 37 GB of weights |
-| `drama-3-int4` | Drama 3 | `fishaudio/drama-3-int4` | 22.4 GiB / 28 GiB | GPTQ, needs compute capability 8.0+ |
-| `drama-3-mlx-4bit` | Drama 3 | `mlx-community/fish-audio-drama-3-4bit` | 22.1 GiB / 29 GiB | Apple Silicon, native MLX runtime |
-| `drama-3-mlx-8bit` | Drama 3 | `mlx-community/fish-audio-drama-3-8bit` | 39.3 GiB / 48 GiB | Apple Silicon, native MLX runtime |
-
-Aliases: `qwen3-tts` → the VoiceDesign checkpoint, `fish-drama-3` / `drama3` →
-`drama-3`.
-
-The table above is only the catalog that ships with the application. The
-desktop application searches the Hugging Face Hub for the rest:
-`GET /v1/tts/discover?q=` asks the hub for the repositories of a query and
-keeps the ones the runtime can serve — the GGUF checkpoints for the language
-runtime and the Qwen3-TTS checkpoints for the speech runtime.
-`POST /v1/tts/discover/install` downloads such a repository; the model joins
-the catalog, so its progress is reported like the progress of every other
-model. A GGUF repository keeps one file per quantisation, and only the
-preferred one (`Q4_K_M`) is downloaded.
-
-### Hardware rules
-
-* **Drama 3 is refused on machines without CUDA.** The desktop application
-  running on macOS must not assume that Drama 3 runs there.
-* The MLX variants require Apple Silicon and enough unified memory
-  (4-bit: 48 GiB, 8-bit: 64 GiB).
-* The native MLX runtime only accepts local reference clips; they are
-  converted to base64 mono 44.1 kHz WAV automatically. Remote URLs are
-  refused with a clear error.
-
-`GET /v1/tts/models` returns the verdict for every model, so the UI can hide
-options the machine cannot serve.
-
-## Running a real engine
+### 命令行
 
 ```bash
-# CUDA machines
-uv pip install --prerelease=allow -v -e ".[fishaudio]"
-hf download Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
-sgl-omni serve --model-path Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign --port 8000
-```
-
-The runtime manager starts and stops the engine itself. The binary is
-resolved through the engine assets (see below) and falls back to `PATH`
-(`sgl-omni` for the CUDA path, `fishaudio_drama3_server` for the native MLX
-path).
-
-### Managing the engines
-
-The engines themselves are assets that the manager owns: which versions
-exist, which one is installed and which one is active.
-
-```bash
-tts-server engines list
-tts-server engines versions llama.cpp
-tts-server engines install llama.cpp b12110
-tts-server engines use llama.cpp b12109
-tts-server engines uninstall llama.cpp b12110
-```
-
-| Engine | Platform | Delivery | Source |
-|---|---|---|---|
-| `llama.cpp` | macOS, Linux | native binary | GitHub Releases (`ggml-org/llama.cpp`) |
-| `mlx` | macOS arm64 | Python package | PyPI (`mlx-lm`) |
-| `sglang-omni` | Linux | Python package (CUDA) | PyPI (`sglang-omni`) |
-| `sglang-omni` | macOS arm64 | source installation (MPS) | `sgl-project/sglang-omni` + `install.sh` |
-| `sglang-omni-mlx` | macOS arm64 | source build (native MLX) | `sgl-project/sglang-omni` + `build_runtime.sh` |
-
-The delivery of an engine depends on the platform, because the upstream
-project ships the Apple Silicon paths differently from the CUDA one:
-
-* **CUDA** — `sglang-omni` is a wheel on PyPI that pulls the CUDA build of
-  PyTorch.
-* **Apple Silicon (MPS)** — the wheel is CUDA only, so the engine is built
-  from a checkout of the repository: `install.sh` creates a Python 3.12
-  environment (`.venv-apple`), installs `ffmpeg@7` and `uv` with Homebrew and
-  installs SGLang from source with the `all_mps` extra.
-* **Apple Silicon (native MLX)** — the TTS models are served by the C++
-  runtime of the repository. `build_runtime.sh` creates a Python 3.12
-  environment with the pinned `mlx` build and compiles the servers with
-  CMake and Ninja; the result contains `fishaudio_drama3_server`,
-  `qwen3_tts_server` and the other model servers. It needs neither CUDA nor
-  PyTorch. The release tags do not carry the servers of the newest models
-  yet, so this runtime follows the `main` branch.
-
-The native runtime serves one server per model family, the engine id of the
-model decides which one is started: `fishaudio-drama3-mlx` →
-`fishaudio_drama3_server`, `sglang-omni-mlx` → `qwen3_tts_server`. The
-`qwen3-tts-0.6b-customvoice-mlx` checkpoint is the Qwen3-TTS model that the
-native runtime can serve, it works without CUDA and without PyTorch. The
-PyTorch path (`sgl-omni serve`) crashes inside the MPS kernels on this
-machine, the native path is the one that runs.
-
-The available versions are fetched live from GitHub Releases, from the GitHub
-tags (the source builds) or from the PyPI JSON API; llama.cpp marks its
-build tags as pre-releases, those are the normal release channel. The
-installation is *managed*: it happens inside the data directory, several
-versions can live side by side and the active one is switched without
-touching the others.
-
-```
-~/.local-ai-manager/runtimes/
-  engines.json                     # manifest: installed versions + active one
-  engines/llama.cpp/b12110/        # one directory per installed version
-  engines/mlx/0.32.2/venv/         # virtual environment of the Python engines
-  engines/sglang-omni-mlx/v0.2.0/  # checkout, build directory and runtime
-```
-
-llama.cpp is downloaded from the release asset that matches the platform
-(`macos-arm64`, `macos-x64`, `ubuntu-x64`, `ubuntu-arm64`) and unpacked; the
-Python engines get a virtual environment and `pip install <package>==<version>`;
-the source installations download the archive of a tag, unpack it and run the
-install script of the repository. The installation runs in the background,
-the progress is polled through `GET /v1/runtimes/{id}/install-progress` and
-the output of `pip` or of the build script is streamed into the log.
-
-### Installing the checkpoints
-
-```bash
-tts-server models install qwen3-tts-1.7b-voicedesign
-tts-server models install drama-3-int4
-tts-server models uninstall drama-3-int4
-```
-
-The download uses the Hugging Face Hub API: the file list comes from
-`/api/models/<repo>/tree/main`, every file is fetched from
-`/<repo>/resolve/main/<file>`. Files that are already on the disk are
-skipped, so an interrupted installation can be resumed, and demo material
-(`*.mp4`, `*.png`, …) is left out.
-
-The checkpoints are stored in the layout of the specification:
-
-```
-~/.local-ai-manager/models/tts/<organisation>--<repository>/
-```
-
-`HF_TOKEN` is used when it is set, which is needed for gated repositories.
-The hardware compatibility is checked **before** the download starts, and a
-model that is not on the disk is refused immediately instead of waiting for
-the engine to time out.
-
-## HTTP API
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/health` | Liveness, free memory and the address the service listens on |
-| `GET` | `/v1/paths` | The directories of the service and the number of the parallel downloads |
-| `POST` | `/v1/settings/download-concurrency` | Sets how many files of a repository are fetched at the same time |
-| `GET` | `/v1/models` | The models the server can serve: the checkpoint is on the disk and the machine can run it |
-| `GET` | `/v1/tts/models` | The full catalog with compatibility and runtime state, including the models that are not downloaded yet |
-| `GET` | `/v1/tts/status` | Runtime states, scheduler snapshot, hardware profile |
-| `POST` | `/v1/audio/speech` | **OpenAI compatible** synthesis |
-| `POST` | `/v1/tts/speak` | Synthesis with the engine specific parameters |
-| `GET` | `/v1/tts/voices` | List voices (filter by `model`, `engine`, `language`, `query`) |
-| `POST` | `/v1/tts/voices` | Create a voice profile |
-| `GET`/`PATCH`/`DELETE` | `/v1/tts/voices/{id}` | Read, edit and delete a voice |
-| `POST` | `/v1/tts/voices/design` | Voice design: description → voice + preview sample |
-| `POST` | `/v1/tts/voices/clone` | Voice cloning: reference clip → voice + preview sample |
-| `GET` | `/v1/tts/voices/{id}/samples` | Samples of a voice |
-| `GET` | `/v1/tts/voices/{id}/samples/{name}` | Download a sample |
-| `POST` | `/v1/tts/models/{id}/load` \| `/unload` \| `/pin` \| `/unpin` | Runtime lifecycle |
-| `POST` | `/v1/tts/models/{id}/install` | Starts the download of the checkpoint (`202 Accepted`) |
-| `GET` | `/v1/tts/models/{id}/install` | Progress of the download |
-| `POST` | `/v1/tts/models/{id}/uninstall` | Removes the checkpoint from the disk; refused for a running model |
-| `GET` | `/v1/tts/models/{id}/logs` | Engine log of the model: the running one or the last start attempt |
-| `GET` | `/v1/tts/discover?q=` | Searches the Hugging Face Hub for the models the runtime can serve |
-| `POST` | `/v1/tts/discover/install` | Downloads a model of the hub (`{"repo": "organisation/repository"}`), answers with its id |
-| `GET` | `/v1/runtimes` | The inference engines and their installation state |
-| `GET` | `/v1/runtimes/{id}` | One engine with its installed versions |
-| `GET` | `/v1/runtimes/{id}/versions` | Versions that can be installed (GitHub Releases / PyPI) |
-| `POST` | `/v1/runtimes/{id}/install` | Starts the installation of an engine version (`202 Accepted`) |
-| `GET` | `/v1/runtimes/{id}/install-progress` | Progress of the engine installation |
-| `POST` | `/v1/runtimes/{id}/activate` | Switches to another installed version |
-| `POST` | `/v1/runtimes/{id}/uninstall` | Removes an installed version from the disk |
-| `POST` | `/v1/runtimes/{id}/health` | Starts the engine service and probes `/health` |
-| `GET` | `/v1/audio/{file}` | Download generated audio |
-
-### OpenAI compatible synthesis
-
-```bash
-curl -X POST http://127.0.0.1:54321/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qwen3-tts","input":"你好，欢迎使用本地 AI 工作台。","voice":"voice_001"}' \
-  --output speech.wav
-```
-
-`voice` accepts a voice profile id. Advanced features that do not fit into
-the OpenAI schema use the internal extensions:
-
-```bash
-# Voice design
-curl -X POST http://127.0.0.1:54321/v1/tts/voices/design \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qwen3-tts","prompt":"青年女性，稚嫩、害羞、略带怯意","name":"府中贴身婢女"}'
-
-# Voice cloning
-curl -X POST http://127.0.0.1:54321/v1/tts/voices/clone \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qwen3-tts","reference_audio":"/path/reference.wav","reference_text":"参考文本"}'
-
-# Multi character scene (Drama 3)
-curl -X POST http://127.0.0.1:54321/v1/tts/speak \
-  -H "Content-Type: application/json" \
-  -d '{"model":"drama-3","input":"<|speaker:0|> 你好 <|speaker:1|> 再见",
-       "parameters":{"family":"fish_drama3","references":[{"audio_path":"/tmp/a.wav","text":"参考"}]}}'
-```
-
-## Voice profiles
-
-A voice profile is independent of the running model. The engine specific part
-is stored verbatim in `engine_config`:
-
-```json
-{
-  "id": "voice_001",
-  "name": "府中贴身婢女",
-  "description": "青年女性，稚嫩、害羞、略带怯意",
-  "language": "Chinese",
-  "engine": "qwen3-tts",
-  "model_id": "qwen3-tts-1.7b-voicedesign",
-  "engine_config": { "voice_design_prompt": "自然语言声音描述" },
-  "samples": ["samples/voice_001_001.wav"],
-  "created_at": "2026-01-01T00:00:00Z",
-  "updated_at": "2026-01-01T00:00:00Z"
-}
-```
-
-Understood keys of `engine_config`:
-
-| Key | Used by | Meaning |
-|---|---|---|
-| `voice_design_prompt` | Qwen3-TTS | Natural language voice description → `instructions` |
-| `speaker` | Qwen3-TTS | Built-in speaker name |
-| `reference_audio` / `reference_text` | all | Reference clip for voice cloning |
-| `references` | all | List of `{audio_path, text}` reference clips |
-| `character_config.speakers` | Drama 3 | Cast of a scene, the position is the `<\|speaker:N\|>` index |
-
-## Command line interface
-
-```bash
-tts-server doctor                                   # hardware and compatibility
+tts-server doctor                                   # 硬件与每个模型的兼容性
 tts-server models list|show|load|unload|pin|unpin|logs|install|uninstall
-tts-server voices list|design|clone|remove
 tts-server engines list|versions|install|use|uninstall
-tts-server speak --model qwen3-tts --text "你好" --voice voice_001 --out hi.wav
+tts-server voices design|clone|remove
+tts-server speak --model qwen3-tts-1.7b-voicedesign --text "你好" --out hi.wav
+tts-server chat --model qwen3-4b-gguf --prompt "用一句话解释光合作用"
 tts-server play hi.wav
 tts-server status
 tts-server serve --host 127.0.0.1 --port 54321
 ```
 
-## Audio manager
-
-* generated audio is written to `audio/generated/` with a timestamp,
-* WAV metadata (sample rate, channels, duration) is read from the header,
-* conversions between WAV variants (sample rate, channel count, bit depth)
-  are done natively; compressed formats (`mp3`, `flac`, `opus`, `aac`, `ogg`)
-  are delegated to `ffmpeg` when it is installed,
-* `play` uses `afplay` on macOS and `ffplay` on Linux.
-
-## Tests
+### HTTP 接口
 
 ```bash
-cargo test          # 61 tests
-cargo clippy --all-targets
+# 语音合成（OpenAI 兼容）
+curl -X POST http://127.0.0.1:54321/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3-tts-1.7b-voicedesign","input":"你好，世界"}' \
+  -o hello.wav
 
-cd apps/desktop
-npm install
-npm run build       # TypeScript and Vite
+# 对话（OpenAI 兼容）
+curl -X POST http://127.0.0.1:54321/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3-4b-gguf","messages":[{"role":"user","content":"你好"}]}'
 ```
 
-The suite covers the scheduler (reservation, LRU eviction, pin, busy tenants,
-TTL sweep), the registry and the compatibility rules, the checkpoint
-installation against a fake hub, the voice library, the payload translation
-of both model families, the runtime manager (load, unload, model switching,
-pin protection, synthesis), the life cycle of the server process and the HTTP
-API end to end.
+全部路由（`GET /v1/routes` 返回同一份机器可读的表）：
 
-## Desktop application
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `GET` | `/health` | 服务是否在运行，以及机器还剩多少内存 |
+| `GET` | `/v1/routes` | 网关路由表 |
+| `GET` | `/v1/paths` | 应用使用的目录与下载设置 |
+| `POST` | `/v1/settings/download-concurrency` | 设置同时下载的文件数 |
+| `GET` | `/v1/models` | 可以服务的模型（已下载且机器能跑） |
+| `GET` | `/v1/tts/models` | 完整模型目录，含未下载的模型 |
+| `GET` | `/v1/tts/status` | 运行时状态与调度器快照 |
+| `POST` | `/v1/audio/speech` | OpenAI 兼容的语音合成 |
+| `POST` | `/v1/chat/completions`、`/v1/completions` | OpenAI 兼容的对话 / 文本补全 |
+| `POST` | `/v1/tts/speak` | 语音合成，可带引擎参数 |
+| `GET`/`POST` | `/v1/tts/voices` | 声音库列表 / 新建声音 |
+| `POST` | `/v1/tts/voices/design`、`/clone` | 声音设计 / 声音克隆 |
+| `GET`/`PATCH`/`DELETE` | `/v1/tts/voices/{id}` | 读取 / 修改 / 删除声音 |
+| `GET` | `/v1/tts/voices/{id}/samples`、`/samples/{name}` | 声音的试听样本 |
+| `POST` | `/v1/tts/models/{id}/load`\|`unload`\|`pin`\|`unpin` | 运行时的生命周期 |
+| `POST` | `/v1/tts/models/{id}/install` | 下载模型（`202 Accepted`） |
+| `GET` | `/v1/tts/models/{id}/install` | 下载进度 |
+| `POST` | `/v1/tts/models/{id}/uninstall` | 删除本地模型（运行中的会被拒绝） |
+| `GET` | `/v1/tts/models/{id}/logs` | 引擎日志 |
+| `GET` | `/v1/tts/discover?q=` | 在 Hugging Face 上搜索模型 |
+| `POST` | `/v1/tts/discover/install` | 下载搜索到的模型 |
+| `GET` | `/v1/runtimes`、`/v1/runtimes/{id}` | 引擎列表 / 单个引擎 |
+| `GET` | `/v1/runtimes/{id}/versions` | 可安装的版本 |
+| `POST` | `/v1/runtimes/{id}/install`\|`activate`\|`uninstall`\|`health` | 安装 / 切版本 / 卸载 / 健康检查 |
+| `GET` | `/v1/runtimes/{id}/install-progress` | 引擎安装进度 |
+| `GET` | `/v1/audio/{file}` | 生成的音频文件 |
+
+---
+
+## 数据目录
+
+默认 `~/.local-ai-manager`，用 `--data-dir` 或环境变量 `LOCAL_AI_MANAGER_HOME` 改。
+
+```
+~/.local-ai-manager/
+├── models/
+│   ├── llm/                 GGUF 权重
+│   └── tts/                 TTS 权重
+├── runtimes/engines/        引擎的安装目录 + engines.json（当前版本）
+├── voices/<voice_id>/       profile.json + samples/
+├── audio/generated/         生成的音频
+└── logs/{tts,llm}/          引擎日志
+```
+
+网关固定监听 `54321`，`LMLATHE_PORT` 可改。端口被同一份构建占着时，桌面端直接复用它；被别的构建占着时，桌面端换到下一个空闲端口并显示自己用的地址。
+
+---
+
+## 模型与引擎
+
+| 模型 | 类型 | 引擎 | 权重 | 内存 |
+|---|---|---|---|---|
+| `qwen3-tts-1.7b-voicedesign` | TTS | sglang-omni | 4.2 G | 8.0 G |
+| `qwen3-tts-1.7b-customvoice` | TTS | sglang-omni | 4.2 G | 8.0 G |
+| `qwen3-tts-1.7b-base` | TTS | sglang-omni | 4.2 G | 8.0 G |
+| `qwen3-tts-0.6b-base` | TTS | sglang-omni | 2.3 G | 4.0 G |
+| `qwen3-tts-0.6b-customvoice-mlx` | TTS | sglang-omni-mlx | 2.3 G | 8.0 G |
+| `drama-3` | TTS | sglang-omni | 38.7 G | 45.0 G |
+| `drama-3-int4` | TTS | sglang-omni | 22.4 G | 28.0 G |
+| `drama-3-mlx-4bit` | TTS | sglang-omni-mlx | 22.1 G | 29.0 G |
+| `drama-3-mlx-8bit` | TTS | sglang-omni-mlx | 39.3 G | 48.0 G |
+| `qwen3-8b-gguf` | LLM | llama.cpp | 4.7 G | 6.0 G |
+| `qwen3-4b-gguf` | LLM | llama.cpp | 2.3 G | 3.0 G |
+| `llama-3.3-70b-instruct-gguf` | LLM | llama.cpp | 39.6 G | 48.0 G |
+
+| 引擎 | 来源 | 提供 |
+|---|---|---|
+| `llama.cpp` | GitHub Releases（`ggml-org/llama.cpp`） | 语言模型 |
+| `mlx` | PyPI（`mlx-lm`） | Apple 上的语言模型 |
+| `sglang-omni` | GitHub 源码构建（`sgl-project/sglang-omni`） | Qwen3-TTS（Torch MPS 路径） |
+| `sglang-omni-mlx` | GitHub 源码构建（原生 MLX 运行时） | Qwen3-TTS、Drama 3（Apple Silicon 路径） |
+
+安装引擎就是把它下载到 `runtimes/engines/<引擎>/<版本>/`，版本可以并存，切换只改一个指针。
+
+---
+
+## 测试
 
 ```bash
-cd apps/desktop
-npm install
-npm run tauri:dev      # development
-npm run tauri:build    # bundles Local AI Manager.app
+cargo test --workspace    # 76 个测试，14 个 target
 ```
 
-The window starts the `tts-server` backend itself (free port, background
-process, log file in `logs/tts/desktop-server.log`) and stops it when the
-window closes — the backend follows the life cycle of the desktop process
-through a pipe, so no orphan process is left behind. The window follows the
-paper workbench design of `designs/index.html` and implements four pages
-against the HTTP API:
+覆盖调度器（预留、LRU 淘汰、固定、TTL）、模型注册表与兼容性、下载（断点续传、并行、字节进度）、声音库、两个模型族的参数翻译、运行时管理器、HTTP 接口端到端。
 
-* **模型 / MODELS** — the registry split into *发现模型* and *已下载*, the
-  download queue with progress in bytes, compatibility, Load / Unload, Pin
-  and the model log. Deleting a checkpoint asks a second time, it removes
-  gigabytes from the disk.
-* **运行时 / ENGINES** — the inference engines (llama.cpp, MLX,
-  SGLang-Omni, native MLX runtime) as real assets: the versions that can be installed, the
-  managed installation, the version switch, the removal and the health check
-  that starts the service and probes `/health`.
-* **服务 / ENDPOINTS** — the local gateway, its routes, the running
-  instances and the event stream.
-* **设置 / PREFERENCES** — the backend connection, the appearance and the
-  local storage.
+测试用的是内置的假引擎，`cargo test` 会自动打开 `mock-engine` feature；**发布构建里没有它**。
 
-## Status of the M1 scope
+---
 
-**P0**
+## 待办清单
 
-- [x] TTS Model Registry
-- [x] Model installation from the model hub
-- [x] SGLang-Omni Runtime Adapter
-- [x] Qwen3-TTS Adapter
-- [x] Fish Drama 3 Adapter
-- [x] Model loading and unloading
-- [x] Runtime state monitoring
-- [x] Global memory scheduling integration
-- [x] Pin / LRU / TTL
-- [x] Basic text to speech
-- [x] Voice profile storage
-- [x] Audio file management
-- [x] Inference log viewer
+### 桌面应用
 
-**P1**
+- [ ] 应用图标还是旧的波形图标，换成 LM-Lathe 的标志
+- [ ] 声音库没有界面：声音设计与克隆只能在 API 与 CLI 里用
+- [ ] 语言模型没有聊天界面：只能通过 `/v1/chat/completions` 或 `tts-server chat`
+- [ ] `.app` 没有签名与公证，换机器安装时 Gatekeeper 会拦
 
-- [x] Voice Design workflow (API, CLI and the studio page)
-- [x] Qwen3-TTS Voice Design
-- [x] Voice Cloning
-- [x] Sample playback (download + local player)
-- [x] Voice profile editing
-- [x] Multi model comparison (the studio renders the same description on
-      several models)
-- [x] Audio format conversion
-- [x] OpenAI compatible speech API
+### 模型与运行时
 
-**Not part of this milestone**
+- [ ] Qwen3-TTS 1.7B 在 Apple Silicon 上一加载就崩（Torch MPS 的 SIGSEGV，上游 bug）；0.6B 的 MLX 转换版可用
+- [ ] Drama 3 的所有变体都超过 34 GB 机器的内存；需要更小的量化或更大的机器
+- [ ] MLX 变体的参数量还是 `—`（Hugging Face 上没有 safetensors 元数据）
+- [ ] 命令行安装模型与引擎时没有周期进度输出，只有桌面端有
+- [ ] 引擎健康检查对没有绑定模型的引擎只回答 `no-model`
 
-Cloud TTS, the voice market, multi user voice libraries, the speech editing
-workstation, multi GPU TTS and the screenplay editor are out of scope as
-stated in the specification.
+### 功能缺口（`todo.md` 的 P1）
 
-The engine adapters are written against the official SGLang-Omni
-documentation and covered by protocol tests. The test suite runs against a
-synthetic engine (`cargo test --workspace` switches it on), so that the
-whole pipeline is exercised on a machine without a GPU. The application
-itself is built without it: `cargo build --release -p tts-server` contains
-no mock at all.
+- [ ] Voice Design Studio 的界面
+- [ ] 多模型声音对比（A/B）
+- [ ] 音频格式转换的命令与界面（后端已经实现）
+- [ ] 采样率、位深、声道数的转换入口
+- [ ] 声音档案的批量管理
