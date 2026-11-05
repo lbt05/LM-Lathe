@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, formatBytes, type Model } from "../api";
+import {
+  api,
+  formatBytes,
+  type DiscoveredModel,
+  type Model,
+} from "../api";
 import { useStore } from "../store";
 import {
   Empty,
@@ -158,6 +163,12 @@ export default function Models({
   // Deleting a checkpoint removes gigabytes from the disk, the row waits for
   // a second click before it does.
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // The search of the Hugging Face Hub, which is where the models that
+  // are not part of the application come from.
+  const [hubQuery, setHubQuery] = useState("");
+  const [hubResults, setHubResults] = useState<DiscoveredModel[]>([]);
+  const [hubLoading, setHubLoading] = useState(false);
+  const [hubSearched, setHubSearched] = useState(false);
 
   const models = store.models;
 
@@ -210,6 +221,58 @@ export default function Models({
   const totalBytes = useMemo(
     () => models.reduce((sum, model) => sum + model.size_bytes, 0),
     [models],
+  );
+
+  // Searches the Hugging Face Hub. The hub is asked when the search is
+  // confirmed, not with every keystroke.
+  const searchHub = useCallback(async () => {
+    const query = hubQuery.trim();
+    if (!query) {
+      setHubResults([]);
+      setHubSearched(false);
+      return;
+    }
+    setHubLoading(true);
+    try {
+      const results = await api.discover(query, 20);
+      setHubResults(results);
+      setHubSearched(true);
+      store.log("info", `在 Hugging Face 上搜索 ${query}，找到 ${results.length} 个模型`);
+    } catch (err) {
+      setHubResults([]);
+      setHubSearched(true);
+      const message = err instanceof Error ? err.message : String(err);
+      store.log("bad", `搜索失败：${message}`);
+      store.notify(message, "bad");
+    } finally {
+      setHubLoading(false);
+    }
+  }, [hubQuery, store]);
+
+  // Downloads a model of the hub. The model joins the catalogue of the
+  // application, so its progress is reported like the progress of every
+  // other model.
+  const installDiscovered = useCallback(
+    async (model: DiscoveredModel) => {
+      try {
+        const started = await api.installDiscovered(model.repo);
+        store.enqueue({
+          id: started.model_id,
+          name: started.name || model.name,
+          percent: 0,
+          bytes: 0,
+          bytesTotal: 0,
+          state: "running",
+        });
+        store.log("info", `开始下载 ${model.name}`);
+        store.notify(`已加入下载队列：${model.name}`);
+        await store.refresh();
+      } catch (err) {
+        store.log("bad", `下载 ${model.name} 失败`);
+        store.notify(err instanceof Error ? err.message : String(err), "bad");
+      }
+    },
+    [store],
   );
 
   const install = useCallback(
@@ -361,11 +424,124 @@ export default function Models({
       ) : null}
 
       {tab === "discover" ? (
-        <section className="sheet">
+        <>
+          <section className="sheet">
+            <SheetHead
+              eyebrow="HUGGING FACE"
+              title="在 Hugging Face 上找模型"
+              meta={
+                hubLoading
+                  ? "搜索中…"
+                  : hubSearched
+                    ? `${hubResults.length} 个结果`
+                    : "搜索仓库里的模型"
+              }
+            />
+            <div className="filters">
+              <span className="fgroup">
+                <input
+                  className="finput"
+                  type="search"
+                  value={hubQuery}
+                  placeholder="搜索 Hugging Face 上的模型…"
+                  onChange={(event) => setHubQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void searchHub();
+                  }}
+                />
+              </span>
+              <button
+                className="btn btn--primary"
+                type="button"
+                disabled={hubLoading || !hubQuery.trim()}
+                onClick={() => void searchHub()}
+              >
+                <Icon name="search" />
+                搜索
+              </button>
+            </div>
+            {hubResults.length ? (
+              <div className="tablewrap">
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th>模型</th>
+                      <th>用途</th>
+                      <th>格式</th>
+                      <th className="num">下载量</th>
+                      <th>最近更新</th>
+                      <th>许可证</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {hubResults.map((model) => (
+                      <tr key={model.repo}>
+                        <td>
+                          <span className="cellstack">
+                            <span className="cellrow">
+                              <TypeMark type={model.family === "llm" ? "LLM" : "TTS"} />
+                              <span className="name">{model.name}</span>
+                            </span>
+                            <span className="sub">
+                              {model.quant
+                                ? `${model.quant} · ${model.files.length} 个权重文件`
+                                : "safetensors 权重"}
+                            </span>
+                          </span>
+                        </td>
+                        <td>
+                          <Tag tone={model.family === "llm" ? "llm" : "tts"}>
+                            {model.family === "llm" ? "LLM" : "TTS"}
+                          </Tag>
+                        </td>
+                        <td>{model.format}</td>
+                        <td className="num">{model.downloads.toLocaleString("zh-CN")}</td>
+                        <td>
+                          <span className="sub">
+                            {model.last_modified
+                              ? new Date(model.last_modified).toLocaleDateString("zh-CN")
+                              : "—"}
+                          </span>
+                        </td>
+                        <td>
+                          <span className="sub">{model.license ?? "—"}</span>
+                        </td>
+                        <td>
+                          <div className="tbl__actions">
+                            <button
+                              className="btn btn--primary"
+                              type="button"
+                              onClick={() => void installDiscovered(model)}
+                            >
+                              <Icon name="download" />
+                              下载
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : hubSearched ? (
+              <Empty
+                title="没有找到能跑的模型"
+                text="只有当前运行时能加载的模型才会出现在这里：GGUF 的语言模型和 Qwen3-TTS 的语音模型。"
+              />
+            ) : (
+              <Empty
+                title="搜一搜 Hugging Face"
+                text="输入模型名字，比如 Qwen3-TTS、llama、fish-audio，搜索结果可以直接下载。"
+              />
+            )}
+          </section>
+
+          <section className="sheet">
           <SheetHead
             eyebrow="REGISTRY · CATALOG"
-            title="发现模型"
-            meta={`${catalog.length} 个模型 · 本地注册表`}
+            title="本地注册表"
+            meta={`${catalog.length} 个模型 · 应用内建`}
           />
           <div className="filters">
             <FilterGroup
@@ -503,7 +679,8 @@ export default function Models({
               }
             />
           )}
-        </section>
+          </section>
+        </>
       ) : null}
 
       {tab === "local" ? (

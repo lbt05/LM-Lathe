@@ -13,12 +13,14 @@ pub mod runtimes;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Json, Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use serde::Deserialize;
 use tts_core::error::TtsError;
+use tts_core::hub::HubClient;
 use tts_core::registry::TTSModelSpec;
 use tts_core::service::TtsService;
 use tts_core::types::{
@@ -29,11 +31,31 @@ use tts_core::voice::{NewVoiceProfile, VoiceFilter, VoicePatch};
 
 use dto::*;
 
+/// The query of a hub search.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiscoverParams {
+    /// The text that is searched for.
+    #[serde(default)]
+    pub q: String,
+    /// How many models are returned.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// The body of the installation of a discovered model.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiscoverInstallRequest {
+    /// The `organisation/repository` id of the hub.
+    pub repo: String,
+}
+
 /// Shared state of the API.
 #[derive(Clone)]
 pub struct ApiState {
     /// The TTS subsystem.
     pub service: Arc<TtsService>,
+    /// The client of the Hugging Face Hub.
+    pub hub: Arc<HubClient>,
 }
 
 /// One route of the local gateway.
@@ -78,6 +100,8 @@ pub const ROUTES: &[RouteInfo] = &[
     RouteInfo { method: "GET", path: "/v1/tts/models/{id}/install", summary: "下载进度" },
     RouteInfo { method: "POST", path: "/v1/tts/models/{id}/uninstall", summary: "删除本地模型" },
     RouteInfo { method: "GET", path: "/v1/tts/models/{id}/logs", summary: "引擎日志" },
+    RouteInfo { method: "GET", path: "/v1/tts/discover", summary: "在 Hugging Face 上搜索模型" },
+    RouteInfo { method: "POST", path: "/v1/tts/discover/install", summary: "下载搜索到的模型" },
     RouteInfo { method: "GET", path: "/v1/runtimes", summary: "推理运行时列表" },
     RouteInfo { method: "GET", path: "/v1/runtimes/{id}", summary: "单个推理运行时" },
     RouteInfo { method: "GET", path: "/v1/runtimes/{id}/versions", summary: "可安装的版本" },
@@ -96,7 +120,10 @@ async fn list_routes() -> impl IntoResponse {
 
 /// Builds the router.
 pub fn router(service: Arc<TtsService>) -> Router {
-    let state = ApiState { service };
+    let state = ApiState {
+        service,
+        hub: Arc::new(HubClient::new()),
+    };
     Router::new()
         .route("/health", get(health))
         .route("/v1/routes", get(list_routes))
@@ -124,6 +151,8 @@ pub fn router(service: Arc<TtsService>) -> Router {
         .route("/v1/tts/models/{id}/install", get(install_progress))
         .route("/v1/tts/models/{id}/uninstall", post(uninstall_model))
         .route("/v1/tts/models/{id}/logs", get(model_logs))
+        .route("/v1/tts/discover", get(discover_models))
+        .route("/v1/tts/discover/install", post(install_discovered))
         .route("/v1/runtimes", get(runtimes::list_runtimes))
         .route("/v1/runtimes/{id}", get(runtimes::get_runtime))
         .route("/v1/runtimes/{id}/versions", get(runtimes::list_versions))
@@ -305,6 +334,131 @@ async fn list_catalogue(State(state): State<ApiState>) -> Result<impl IntoRespon
         .map(|spec| model_dto(&state, &spec, &runtimes))
         .collect();
     Ok(axum::Json(models))
+}
+
+/// `GET /v1/tts/discover`
+///
+/// Searches the Hugging Face Hub for models the runtime can serve. The
+/// registry only knows the models that ship with the application, so this
+/// is where the rest of the hub comes from.
+async fn discover_models(
+    State(state): State<ApiState>,
+    Query(params): Query<DiscoverParams>,
+) -> Result<impl IntoResponse, ApiError> {
+    let models = state
+        .hub
+        .search(&params.q, params.limit.unwrap_or(20))
+        .await?;
+    let known: Vec<TTSModelSpec> = state.service.registry.list();
+    let payload: Vec<DiscoveredModelDto> = models
+        .iter()
+        .map(|model| {
+            // A repository that the application already knows keeps the id
+            // of that model, so the download is reported under it.
+            let known_spec = known.iter().find(|spec| spec.hf_repo == model.id);
+            DiscoveredModelDto {
+                id: known_spec
+                    .map(|spec| spec.id.clone())
+                    .unwrap_or_else(|| model.id.replace('/', "--")),
+                repo: model.id.clone(),
+                name: model.id.clone(),
+                family: model
+                    .family()
+                    .map(|family| family.as_str().to_string())
+                    .unwrap_or_default(),
+                format: model.format().to_string(),
+                engine_id: model.engine_id().to_string(),
+                downloads: model.downloads,
+                likes: model.likes,
+                last_modified: model.last_modified.clone(),
+                license: model.license(),
+                quant: model.quant(),
+                files: model.gguf_files(),
+                installed: known_spec
+                    .map(|spec| spec.is_installed())
+                    .unwrap_or(false),
+            }
+        })
+        .collect();
+    Ok(axum::Json(payload))
+}
+
+/// `POST /v1/tts/models/install`
+///
+/// Downloads a model of the Hugging Face Hub that was found by the search.
+/// The model is described by its repository, the specification is built
+/// from the hub and the model joins the catalogue, so the progress of the
+/// download is reported like the progress of every other model.
+async fn install_discovered(
+    State(state): State<ApiState>,
+    Json(body): Json<DiscoverInstallRequest>,
+) -> Result<Response, ApiError> {
+    let repo = body.repo.trim();
+    if repo.is_empty() {
+        return Err(ApiError(TtsError::InvalidRequest(
+            "缺少模型仓库".to_string(),
+        )));
+    }
+
+    // A repository that is already known keeps its own specification, so
+    // the checkpoint is not written twice.
+    if let Some(spec) = state
+        .service
+        .registry
+        .list()
+        .into_iter()
+        .find(|spec| spec.hf_repo == repo)
+    {
+        return start_install(&state, spec);
+    }
+
+    let model = state.hub.model(repo).await?;
+    if !model.is_runnable() {
+        return Err(ApiError(TtsError::InvalidRequest(format!(
+            "`{repo}` 不是本应用能运行的模型"
+        ))));
+    }
+    let files = state.hub.files(repo).await?;
+    let spec = model.to_spec(&files)?;
+    state.service.registry.insert(spec.clone());
+    start_install(&state, spec)
+}
+
+/// Starts the download of a model and answers with its id.
+fn start_install(state: &ApiState, spec: TTSModelSpec) -> Result<Response, ApiError> {
+    if spec.is_builtin() {
+        return Err(ApiError(TtsError::InvalidRequest(format!(
+            "`{}` 内置于应用，无需下载",
+            spec.id
+        ))));
+    }
+    if state
+        .service
+        .installs
+        .get(&spec.id)
+        .map(|progress| progress.state == "running")
+        .unwrap_or(false)
+    {
+        return Ok((StatusCode::ACCEPTED, "the installation is already running").into_response());
+    }
+    let service = state.service.clone();
+    state.service.installs.start(&spec.id);
+    let model_id = spec.id.clone();
+    let name = spec.name.clone();
+    tokio::spawn(async move {
+        let result = service
+            .installer
+            .install(&spec, Some(&service.installs))
+            .await;
+        service
+            .installs
+            .finish(&spec.id, result.as_ref().err().map(|err| err.to_string()));
+    });
+    Ok((
+        StatusCode::ACCEPTED,
+        axum::Json(serde_json::json!({ "model_id": model_id, "name": name })),
+    )
+        .into_response())
 }
 
 /// `true` when the checkpoint of the model is on the disk and the machine can

@@ -142,6 +142,16 @@ pinned == false AND active_requests == 0 AND idle_duration > TTL
 Aliases: `qwen3-tts` → the VoiceDesign checkpoint, `fish-drama-3` / `drama3` →
 `drama-3`, `mock` → `mock-echo`.
 
+The table above is only the catalog that ships with the application. The
+desktop application searches the Hugging Face Hub for the rest:
+`GET /v1/tts/discover?q=` asks the hub for the repositories of a query and
+keeps the ones the runtime can serve — the GGUF checkpoints for the language
+runtime and the Qwen3-TTS checkpoints for the speech runtime.
+`POST /v1/tts/discover/install` downloads such a repository; the model joins
+the catalog, so its progress is reported like the progress of every other
+model. A GGUF repository keeps one file per quantisation, and only the
+preferred one (`Q4_K_M`) is downloaded.
+
 ### Hardware rules
 
 * **Drama 3 is refused on machines without CUDA.** The desktop application
@@ -285,6 +295,8 @@ the engine to time out.
 | `GET` | `/v1/tts/models/{id}/install` | Progress of the download |
 | `POST` | `/v1/tts/models/{id}/uninstall` | Removes the checkpoint from the disk; refused for a running model |
 | `GET` | `/v1/tts/models/{id}/logs` | Engine log of the model: the running one or the last start attempt |
+| `GET` | `/v1/tts/discover?q=` | Searches the Hugging Face Hub for the models the runtime can serve |
+| `POST` | `/v1/tts/discover/install` | Downloads a model of the hub (`{"repo": "organisation/repository"}`), answers with its id |
 | `GET` | `/v1/runtimes` | The inference engines and their installation state |
 | `GET` | `/v1/runtimes/{id}` | One engine with its installed versions |
 | `GET` | `/v1/runtimes/{id}/versions` | Versions that can be installed (GitHub Releases / PyPI) |

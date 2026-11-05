@@ -109,6 +109,7 @@ function inTauri() {
 }
 
 const THEME_KEY = "lmlathe.theme";
+const BACKEND_KEY = "lmlathe.backend";
 
 const VIEWS: View[] = ["models", "runtime", "services", "settings"];
 
@@ -123,7 +124,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [base, setBase] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const [manualUrl, setManualUrl] = useState("http://127.0.0.1:54321");
+  const [manualUrl, setManualUrlState] = useState(
+    () => localStorage.getItem(BACKEND_KEY) ?? "http://127.0.0.1:54321",
+  );
+  // The address of the local service survives a reload, so it does not have
+  // to be typed again after every restart.
+  const setManualUrl = useCallback((url: string) => {
+    setManualUrlState(url);
+    localStorage.setItem(BACKEND_KEY, url);
+  }, []);
   const [models, setModels] = useState<Model[]>([]);
   const [status, setStatus] = useState<Status | null>(null);
   const [engines, setEngines] = useState<EngineAsset[]>([]);

@@ -16,6 +16,7 @@ pub mod audio;
 pub mod engine_assets;
 pub mod error;
 pub mod hardware;
+pub mod hub;
 pub mod installer;
 pub mod llm;
 pub mod paths;
@@ -32,6 +33,7 @@ pub use engine_assets::{
 };
 pub use error::{TtsError, TtsResult};
 pub use hardware::HardwareProfile;
+pub use hub::{HubClient, HubModel};
 pub use installer::{InstallProgress, InstallReport, InstallTracker, ModelInstaller};
 pub use llm::{gguf_checkpoint, LlmRuntime, LlmRuntimeManager};
 pub use paths::AppPaths;

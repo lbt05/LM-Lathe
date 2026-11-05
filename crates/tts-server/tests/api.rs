@@ -443,3 +443,24 @@ async fn a_chat_request_without_a_model_is_rejected() {
         serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(json["kind"], "invalid_request");
 }
+
+/// The search of the hub answers with the models of the query, and a
+/// query without a text is empty.
+#[tokio::test]
+async fn the_hub_is_searched_for_models() {
+    let dir = TempDir::new("api");
+    let (status, body) = get(router(&dir), "/v1/tts/discover?q=Qwen3-TTS").await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    let models = json.as_array().unwrap();
+
+    // The hub answers with the repositories of the query; every one of them
+    // has to be a model the runtime can serve.
+    assert!(!models.is_empty());
+    for model in models {
+        assert!(model["repo"].as_str().unwrap().contains('/'));
+        assert!(model["family"] == "llm" || model["family"] == "qwen3-tts");
+        assert!(!model["id"].as_str().unwrap().contains('/'));
+    }
+}

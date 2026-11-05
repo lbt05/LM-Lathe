@@ -275,6 +275,37 @@ pub struct ModelDto {
     pub pinned: bool,
 }
 
+/// A model of the Hugging Face Hub that the runtime can serve.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiscoveredModelDto {
+    /// The id the model is known by in the API and on disk.
+    pub id: String,
+    /// The `organisation/repository` id of the hub.
+    pub repo: String,
+    /// Display name.
+    pub name: String,
+    /// Model family, `llm` or `qwen3-tts`.
+    pub family: String,
+    /// Checkpoint format.
+    pub format: String,
+    /// The engine that serves the model.
+    pub engine_id: String,
+    /// Downloads in the last month.
+    pub downloads: u64,
+    /// How many users marked the model.
+    pub likes: u64,
+    /// When the repository was touched the last time.
+    pub last_modified: Option<String>,
+    /// The licence of the repository.
+    pub license: Option<String>,
+    /// The quantisation of the checkpoint that would be downloaded.
+    pub quant: Option<String>,
+    /// The checkpoint files of the repository.
+    pub files: Vec<String>,
+    /// `true` when the checkpoint is already on the disk.
+    pub installed: bool,
+}
+
 /// A voice profile.
 #[derive(Debug, Clone, Serialize)]
 pub struct VoiceDto {

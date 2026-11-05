@@ -105,6 +105,23 @@ export interface Route {
   summary: string;
 }
 
+/** A model of the Hugging Face Hub that the runtime can serve. */
+export interface DiscoveredModel {
+  id: string;
+  repo: string;
+  name: string;
+  family: string;
+  format: string;
+  engine_id: string;
+  downloads: number;
+  likes: number;
+  last_modified: string | null;
+  license: string | null;
+  quant: string | null;
+  files: string[];
+  installed: boolean;
+}
+
 export interface InstallProgress {
   model_id: string;
   state: string;
@@ -265,6 +282,18 @@ export const api = {
   status: () => request<Status>("/v1/tts/status"),
   models: () => request<Model[]>("/v1/tts/models"),
   routes: () => request<Route[]>("/v1/routes"),
+
+  /** Searches the Hugging Face Hub for models the runtime can serve. */
+  discover: (query: string, limit = 20) =>
+    request<DiscoveredModel[]>(
+      `/v1/tts/discover?q=${encodeURIComponent(query)}&limit=${limit}`,
+    ),
+  /** Downloads a model that was found by the search. */
+  installDiscovered: (repo: string) =>
+    request<{ model_id: string; name: string }>("/v1/tts/discover/install", {
+      method: "POST",
+      body: JSON.stringify({ repo }),
+    }),
 
   loadModel: (id: string) =>
     request<Runtime>(`/v1/tts/models/${id}/load`, { method: "POST" }),
