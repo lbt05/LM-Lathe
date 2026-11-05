@@ -1474,12 +1474,12 @@ impl EngineAssetManager {
                 if let Some(program) = program {
                     if let Some(directory) = self.managed_dir(&definition) {
                         if let Some(path) = find_program(&directory, &program) {
-                            return Some(path);
+                            return Some(self.repair_launcher(&path));
                         }
                     }
                 }
                 if let Some(entry) = self.managed_entry(&definition) {
-                    return Some(entry);
+                    return Some(self.repair_launcher(&entry));
                 }
             }
             if let Some(system) = definition
@@ -1494,6 +1494,20 @@ impl EngineAssetManager {
             }
         }
         None
+    }
+
+    /// Repairs a launcher of a Python environment whose data directory has
+    /// been moved: the script still names the interpreter of the old place,
+    /// so the engine refuses to start.
+    fn repair_launcher(&self, path: &Path) -> PathBuf {
+        if let Some(repaired) = repair_shebang(path, self.paths.root()) {
+            tracing::info!(
+                path = %repaired.display(),
+                "the launcher of the engine was repaired after the data directory moved"
+            );
+            return repaired;
+        }
+        path.to_path_buf()
     }
 
     /// The directory of the managed installation that is active.
@@ -1627,6 +1641,7 @@ fn select_asset<'a>(assets: &'a [GithubAsset], platform: &str) -> Option<&'a Git
 /// Searches a directory for a program.
 fn find_program(root: &Path, program: &str) -> Option<PathBuf> {
     let mut stack = vec![root.to_path_buf()];
+    let mut found: Vec<PathBuf> = Vec::new();
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -1636,11 +1651,25 @@ fn find_program(root: &Path, program: &str) -> Option<PathBuf> {
             if path.is_dir() {
                 stack.push(path);
             } else if path.file_name().and_then(|n| n.to_str()) == Some(program) {
-                return Some(path);
+                found.push(path);
             }
         }
     }
-    None
+    // Das installierte Laufzeitverzeichnis hat Vorrang vor dem Bauverzeichnis:
+    // dort liegen die Programme, die der Nutzer bekommt. Die Programme im
+    // Bauverzeichnis tragen den Pfad der Bauumgebung in sich und laufen
+    // nur, solange diese Umgebung dort steht.
+    found.sort_by_key(|path| {
+        let components: Vec<_> = path.components().collect();
+        match components
+            .iter()
+            .position(|component| component.as_os_str() == "runtime")
+        {
+            Some(index) => (0, index),
+            None => (1, 0),
+        }
+    });
+    found.into_iter().next()
 }
 
 /// Makes a file executable.
@@ -1924,4 +1953,85 @@ fn free_port() -> std::io::Result<u16> {
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(port)
+}
+
+/// Writes the current data directory into the shebang of a launcher script
+/// when the interpreter it names does not exist any more. A data directory
+/// that was moved leaves its Python environments behind: the scripts of the
+/// environment still point to the old path, and the engine dies with "No
+/// such file or directory" before it starts.
+///
+/// Only the first line of the script is touched. The compiled files of the
+/// environment keep their bytes, because a change inside them would break
+/// them.
+fn repair_shebang(entry: &Path, root: &Path) -> Option<PathBuf> {
+    let data = std::fs::read(entry).ok()?;
+    let end = data
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(data.len());
+    let (first, rest) = data.split_at(end);
+    let text = std::str::from_utf8(first).ok()?;
+    let interpreter = text.strip_prefix("#!")?.trim();
+    if !interpreter.starts_with('/') || Path::new(interpreter).exists() {
+        return None;
+    }
+    // The interpreter always lives under the data directory:
+    // "<root>/runtimes/engines/<engine>/<version>/...". Only the root has
+    // changed, the rest of the path stays the same.
+    let marker = "runtimes/engines/";
+    let index = interpreter.find(marker)?;
+    let candidate = root.join(&interpreter[index..]);
+    if !candidate.exists() {
+        return None;
+    }
+    let mut repaired = Vec::with_capacity(data.len() + 32);
+    repaired.extend_from_slice(format!("#!{}", candidate.display()).as_bytes());
+    repaired.push(b'\n');
+    repaired.extend_from_slice(rest);
+    std::fs::write(entry, &repaired).ok()?;
+    Some(entry.to_path_buf())
+}
+
+#[cfg(test)]
+mod shebang_tests {
+    use super::repair_shebang;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_launcher_of_a_moved_directory_is_repaired() {
+        let root = PathBuf::from("/tmp/lm-lathe-test-root");
+        let version = root.join("runtimes/engines/sglang-omni/v0.2.0");
+        fs::create_dir_all(version.join("venv/bin")).unwrap();
+        let interpreter = version.join("venv/bin/python");
+        fs::write(&interpreter, b"").unwrap();
+
+        let script = version.join("venv/bin/sgl-omni");
+        fs::write(
+            &script,
+            "#!/old/place/runtimes/engines/sglang-omni/v0.2.0/venv/bin/python\nfrom app import main\n",
+        )
+        .unwrap();
+
+        let repaired = repair_shebang(&script, &root).expect("the launcher is repaired");
+        let text = fs::read_to_string(&repaired).unwrap();
+        assert!(text.starts_with("#!/tmp/lm-lathe-test-root/runtimes/engines/"));
+        assert!(text.ends_with("from app import main\n"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_launcher_with_a_working_interpreter_stays_untouched() {
+        let root = PathBuf::from("/tmp/lm-lathe-test-root-2");
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("script");
+        fs::write(&script, "#!/bin/sh\necho hallo\n").unwrap();
+
+        assert!(repair_shebang(&script, &root).is_none());
+        assert_eq!(fs::read_to_string(&script).unwrap(), "#!/bin/sh\necho hallo\n");
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }
