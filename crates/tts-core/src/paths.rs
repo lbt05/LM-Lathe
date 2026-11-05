@@ -1,7 +1,7 @@
-//! Filesystem layout of the local AI manager.
+//! Filesystem layout of LM-Lathe.
 //!
 //! ```text
-//! ~/.local-ai-manager/
+//! ~/.lm-lathe/
 //!   models/
 //!     llm/
 //!     tts/
@@ -20,7 +20,11 @@ use std::path::{Path, PathBuf};
 use crate::error::{TtsError, TtsResult};
 
 /// Environment variable that overrides the root directory.
-pub const ROOT_ENV: &str = "LOCAL_AI_MANAGER_HOME";
+pub const ROOT_ENV: &str = "LM_LATHE_HOME";
+
+/// The directory of the first versions of the application. It is still read
+/// when it is set, so that an old installation keeps working.
+pub const LEGACY_ROOT_ENV: &str = "LOCAL_AI_MANAGER_HOME";
 
 /// Resolved locations of every asset directory.
 #[derive(Debug, Clone)]
@@ -36,15 +40,17 @@ impl AppPaths {
 
     /// Discovers the root directory.
     ///
-    /// `LOCAL_AI_MANAGER_HOME` wins, otherwise `~/.local-ai-manager` is used.
+    /// `LM_LATHE_HOME` wins, then the name of the first versions, otherwise
+    /// `~/.lm-lathe` is used.
     pub fn discover() -> Self {
         let root = std::env::var_os(ROOT_ENV)
+            .or_else(|| std::env::var_os(LEGACY_ROOT_ENV))
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 let home = std::env::var_os("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|| PathBuf::from("."));
-                home.join(".local-ai-manager")
+                home.join(".lm-lathe")
             });
         Self::with_root(root)
     }

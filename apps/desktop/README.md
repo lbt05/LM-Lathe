@@ -62,7 +62,7 @@ src-tauri/
 2. 打包进 `.app` 的 sidecar（已安装的应用优先用它自己带的那一份），
 3. 工作区的 `target/release/lm-lathe-server` 或 `target/debug/lm-lathe-server`（按修改时间取最新的）。
 
-后端的输出写入 `~/.local-ai-manager/logs/tts/desktop-server.log`；数据目录可以用 `LOCAL_AI_MANAGER_HOME` 改变。
+后端的输出写入 `~/.lm-lathe/logs/tts/desktop-server.log`；数据目录可以用 `LM_LATHE_HOME` 改变。
 
 ## 浏览器中的调试
 

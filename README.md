@@ -172,10 +172,10 @@ curl -X POST http://127.0.0.1:54321/v1/chat/completions \
 
 ## 数据目录
 
-默认 `~/.local-ai-manager`，用 `--data-dir` 或环境变量 `LOCAL_AI_MANAGER_HOME` 改。
+默认 `~/.lm-lathe`，用 `--data-dir` 或环境变量 `LM_LATHE_HOME` 改。
 
 ```
-~/.local-ai-manager/
+~/.lm-lathe/
 ├── models/
 │   ├── llm/                 GGUF 权重
 │   └── tts/                 TTS 权重

@@ -402,7 +402,7 @@ Voice Library 是独立于推理引擎的声音资产管理中心。
 ### 6.4 声音资产目录
 
 ```text
-~/.local-ai-manager/
+~/.lm-lathe/
     |
     +-- models/
     |      +-- llm/

@@ -21,7 +21,7 @@ use tts_core::voice::{NewVoiceProfile, VoiceFilter};
 )]
 pub struct Cli {
     /// Directory that holds models, voices, audio and logs.
-    #[arg(long, global = true, env = "LOCAL_AI_MANAGER_HOME")]
+    #[arg(long, global = true, env = "LM_LATHE_HOME")]
     pub data_dir: Option<PathBuf>,
 
     /// The command to run.

@@ -13,7 +13,7 @@
 //! version, so that several versions can live side by side:
 //!
 //! ```text
-//! ~/.local-ai-manager/runtimes/
+//! ~/.lm-lathe/runtimes/
 //!   engines.json                     # manifest: installed versions + active one
 //!   llama.cpp/b12110/build/bin/llama-server
 //!   mlx/0.32.2/venv/bin/mlx_lm.server
@@ -575,14 +575,14 @@ impl EngineAssetManager {
         let client = reqwest::Client::builder()
             .timeout(HTTP_TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)
-            .user_agent("lm-lathe/0.1 (+local-ai-manager)")
+            .user_agent("lm-lathe/0.1")
             .build()
             .map_err(|err| TtsError::Internal(format!("http client: {err}")))?;
         // The download of a release archive is not bounded by a total
         // timeout, only the connection is.
         let download_client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
-            .user_agent("lm-lathe/0.1 (+local-ai-manager)")
+            .user_agent("lm-lathe/0.1")
             .build()
             .map_err(|err| TtsError::Internal(format!("http client: {err}")))?;
         let manager = Arc::new(Self {

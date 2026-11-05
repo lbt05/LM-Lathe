@@ -27,7 +27,7 @@ async fn the_server_stops_when_the_parent_closes_the_pipe() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_lm-lathe-server"))
         .args(["serve", "--host", "127.0.0.1", "--port", "8091"])
         .env("TTS_SERVER_EXIT_ON_STDIN_EOF", "1")
-        .env("LOCAL_AI_MANAGER_HOME", "/tmp/lm-lathe-lifecycle-test")
+        .env("LM_LATHE_HOME", "/tmp/lm-lathe-lifecycle-test")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -63,7 +63,7 @@ async fn the_server_keeps_running_without_the_pipe_watch() {
     // input, so a redirected stdin does not stop it.
     let mut child = Command::new(env!("CARGO_BIN_EXE_lm-lathe-server"))
         .args(["serve", "--host", "127.0.0.1", "--port", "8092"])
-        .env("LOCAL_AI_MANAGER_HOME", "/tmp/lm-lathe-lifecycle-test")
+        .env("LM_LATHE_HOME", "/tmp/lm-lathe-lifecycle-test")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

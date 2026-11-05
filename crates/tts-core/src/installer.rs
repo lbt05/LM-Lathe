@@ -136,7 +136,7 @@ impl ModelInstaller {
     /// Creates an installer that stores the checkpoints under `root`.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let client = reqwest::Client::builder()
-            .user_agent(concat!("local-ai-manager/", env!("CARGO_PKG_VERSION")))
+            .user_agent("lm-lathe")
             .build()
             .unwrap_or_default();
         let root = root.into();

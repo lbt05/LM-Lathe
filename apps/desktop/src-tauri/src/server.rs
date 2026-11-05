@@ -237,11 +237,11 @@ fn wait_for_port(port: u16, timeout: Duration) -> Result<(), String> {
 
 /// The directory that holds the models, voices and generated audio.
 fn data_directory() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("LOCAL_AI_MANAGER_HOME") {
+    if let Ok(path) = std::env::var("LM_LATHE_HOME") {
         return Some(PathBuf::from(path));
     }
     let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".local-ai-manager"))
+    Some(PathBuf::from(home).join(".lm-lathe"))
 }
 
 /// Starts the backend and returns its base URL.
@@ -322,7 +322,7 @@ pub async fn start_server(
     }
 
     if let Some(directory) = directory {
-        command.env("LOCAL_AI_MANAGER_HOME", directory);
+        command.env("LM_LATHE_HOME", directory);
     }
 
     let mut child = command
