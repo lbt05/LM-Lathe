@@ -35,18 +35,25 @@ const THEMES: [Theme, string, string][] = [
   ["dark", "深色", "低对比的夜间配色"],
 ];
 
-/** Reads how much space the preferences of the application use. */
-function storageSize() {
-  try {
-    const keys = ["lmlathe.theme", "lmlathe.backend", "lmlathe.bind"];
-    const bytes = keys.reduce((total, key) => {
-      const value = localStorage.getItem(key);
-      return total + (value ? value.length : 0);
-    }, 0);
-    return bytes ? `已启用 · ${bytes} 字节` : "已启用 · 尚未保存";
-  } catch {
-    return "不可用 · 浏览器禁用了本地存储";
+/** The preferences that the application keeps on this machine. */
+function storedPreferences(): { label: string; value: string }[] {
+  const labels: Record<string, string> = {
+    "lmlathe.theme": "主题",
+    "lmlathe.backend": "后端地址",
+    "lmlathe.bind": "监听地址",
+  };
+  const saved: { label: string; value: string }[] = [];
+  for (const [key, label] of Object.entries(labels)) {
+    let value: string | null = null;
+    try {
+      value = localStorage.getItem(key);
+    } catch {
+      // The browser forbids the local storage.
+      return [];
+    }
+    if (value) saved.push({ label, value });
   }
+  return saved;
 }
 
 export default function Settings() {
@@ -158,11 +165,21 @@ export default function Settings() {
         </SetRow>
         <SetRow
           label="偏好存储"
-          desc="主题、后台地址和监听地址保存在本机的浏览器存储里（lmlathe.theme / lmlathe.backend / lmlathe.bind），不上传任何数据。"
+          desc="主题、后端地址和监听地址保存在这台机器上，不上传任何数据；删除应用的数据目录会一并清除。"
         >
-          <span className="mono" style={{ fontSize: "11.5px" }}>
-            {storageSize()}
-          </span>
+          {storedPreferences().length ? (
+            <div className="taglist">
+              {storedPreferences().map((item) => (
+                <Tag key={item.label} tone="info">
+                  {item.label} {item.value}
+                </Tag>
+              ))}
+            </div>
+          ) : (
+            <span className="mono" style={{ fontSize: "11.5px" }}>
+              还没有保存偏好
+            </span>
+          )}
         </SetRow>
       </section>
 
