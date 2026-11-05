@@ -32,3 +32,6 @@ tracing-subscriber.workspace = true
 http-body-util = "0.1"
 reqwest = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
+# The tests speak to a synthetic engine, so that they run on a machine
+# without a GPU. The application is built without it.
+tts-core = { path = "../tts-core", features = ["mock-engine"] }

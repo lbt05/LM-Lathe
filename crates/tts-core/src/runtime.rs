@@ -24,7 +24,9 @@ use crate::audio::AudioManager;
 use crate::error::{TtsError, TtsResult};
 use crate::hardware::HardwareProfile;
 use crate::registry::{CompatibilityReport, TTSModelRegistry, TTSModelSpec};
-use crate::types::{AudioOutput, EngineMode, RuntimeState, TTSRequest};
+use crate::types::{AudioOutput, RuntimeState, TTSRequest};
+#[cfg(feature = "mock-engine")]
+use crate::types::EngineMode;
 use crate::voice::VoiceLibrary;
 
 /// State of one TTS model.
@@ -304,6 +306,15 @@ impl Inner {
             .values()
             .cloned()
             .collect();
+        // The memory of a running engine is read again, so that the numbers
+        // follow the process.
+        for runtime in &mut runtimes {
+            if runtime.state == RuntimeState::Running {
+                runtime.actual_memory = runtime
+                    .process_id
+                    .and_then(crate::hardware::process_memory);
+            }
+        }
         runtimes.sort_by(|a, b| a.model_id.cmp(&b.model_id));
         runtimes
     }
@@ -315,7 +326,7 @@ impl Inner {
             .entry(model_id.to_string())
             .or_insert_with(|| TTSRuntime {
                 model_id: model_id.to_string(),
-                engine_id: "unknown".to_string(),
+                engine_id: String::new(),
                 state: RuntimeState::Unloaded,
                 pinned: false,
                 process_id: None,
@@ -359,7 +370,11 @@ impl Inner {
         }
 
         // The checkpoint has to be on the disk before the engine is started.
-        if spec.mode != EngineMode::Mock {
+        #[cfg(feature = "mock-engine")]
+        let needs_checkpoint = spec.mode != EngineMode::Mock;
+        #[cfg(not(feature = "mock-engine"))]
+        let needs_checkpoint = true;
+        if needs_checkpoint {
             let path = self.registry.install_path(&spec.id).unwrap_or_default();
             if !path.is_dir() {
                 return Err(TtsError::Engine(format!(
@@ -468,7 +483,10 @@ impl Inner {
             runtime.process_id = handle.process_id;
             runtime.endpoint = handle.endpoint.clone();
             runtime.last_used_at = Some(Utc::now());
-            runtime.actual_memory = runtime.actual_memory.or(Some(spec.estimated_memory_bytes));
+            // The memory of the running engine is measured, not estimated.
+            runtime.actual_memory = handle
+                .process_id
+                .and_then(crate::hardware::process_memory);
         });
         tracing::info!(model = %spec.id, "TTS model is running");
         Ok(self

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { version } from "../../package.json";
 import { useStore, type Theme } from "../store";
 import {
   Icon,
@@ -209,7 +210,7 @@ export default function Settings() {
         <SheetHead eyebrow="ABOUT" title="关于" />
         <SetRow label="应用" desc="LM-Lathe 桌面端，管理本机上的 TTS 模型与运行时。">
           <span className="mono" style={{ fontSize: "11.5px" }}>
-            v0.1.0
+            v{version}
           </span>
         </SetRow>
       </section>

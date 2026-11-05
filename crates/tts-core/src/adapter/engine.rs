@@ -203,6 +203,7 @@ impl SGLangOmniAdapter {
                 // reach the speech engine.
                 ("llama-server".to_string(), Vec::new())
             }
+            #[cfg(feature = "mock-engine")]
             EngineMode::Mock => ("mock".to_string(), Vec::new()),
         }
     }
@@ -349,6 +350,7 @@ impl SGLangOmniAdapter {
 #[async_trait]
 impl EngineAdapter for SGLangOmniAdapter {
     async fn start(&self, config: &TTSRuntimeConfig) -> TtsResult<RuntimeHandle> {
+        #[cfg(feature = "mock-engine")]
         if config.mode == EngineMode::Mock {
             return Err(TtsError::InvalidRequest(
                 "the mock engine does not spawn a process".to_string(),

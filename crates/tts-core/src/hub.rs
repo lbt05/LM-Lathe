@@ -681,6 +681,7 @@ impl HubModel {
             format: self.format().to_string(),
             size_bytes,
             estimated_memory_bytes: size_bytes + size_bytes / 4,
+            parameters: self.parameters,
             features: match family {
                 ModelFamily::Llm => Vec::new(),
                 ModelFamily::FishDrama3 => vec![

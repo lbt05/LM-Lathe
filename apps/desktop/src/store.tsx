@@ -202,15 +202,39 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  const missingRef = useRef<string | null>(null);
+
+  // The parts of the service that are not needed for the speech are not
+  // vital: when they do not answer, the application says so instead of
+  // showing an empty list as if nothing was there.
+  const reportMissing = useCallback(
+    (what: string, err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      if (missingRef.current === message) return;
+      missingRef.current = message;
+      log("warn", `${what}：${message}`);
+    },
+    [log],
+  );
+
   const refresh = useCallback(async () => {
     try {
       const [nextModels, nextStatus, nextEngines, nextRoutes, nextPaths] =
         await Promise.all([
           api.models(),
           api.status(),
-          api.engines().catch(() => []),
-          api.routes().catch(() => []),
-          api.paths().catch(() => null),
+          api.engines().catch((err) => {
+            reportMissing("运行时列表", err);
+            return [] as EngineAsset[];
+          }),
+          api.routes().catch((err) => {
+            reportMissing("路由表", err);
+            return [] as Route[];
+          }),
+          api.paths().catch((err) => {
+            reportMissing("目录设置", err);
+            return null as Paths | null;
+          }),
         ]);
       setModels(nextModels);
       setStatus(nextStatus);
@@ -220,7 +244,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [reportMissing]);
 
   const connect = useCallback(
     async (wanted?: BindAddress) => {

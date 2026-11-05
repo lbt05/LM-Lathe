@@ -89,6 +89,7 @@ fn spec() -> TTSModelSpec {
         format: "safetensors".to_string(),
         size_bytes: 3_833_402_552,
         estimated_memory_bytes: 8 * 1024 * 1024 * 1024,
+        parameters: None,
         features: vec![tts_core::types::TtsFeature::TextToSpeech],
         llm_features: vec![],
         files: vec![],

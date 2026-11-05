@@ -81,7 +81,7 @@ export default function Services() {
                   <th>实例</th>
                   <th>运行时</th>
                   <th>端点</th>
-                  <th className="num">显存</th>
+                  <th className="num">占用内存</th>
                   <th className="num">活动请求</th>
                   <th>状态</th>
                   <th></th>
@@ -140,9 +140,7 @@ export default function Services() {
                       <span className="sub">{runtime.endpoint ?? "—"}</span>
                     </td>
                     <td className="num">
-                      {formatBytes(
-                        runtime.actual_memory || runtime.estimated_memory,
-                      )}
+                      {formatBytes(runtime.actual_memory)}
                     </td>
                     <td className="num">{runtime.active_requests}</td>
                     <td>
@@ -281,7 +279,7 @@ export function ServiceInspector({ id, tab }: { id: string; tab: string }) {
           <Kv k="运行时" v={runtime.engine_id} mono />
           <Kv k="端点" v={runtime.endpoint ?? "—"} mono />
           <Kv k="进程" v={runtime.process_id ?? "—"} mono />
-          <Kv k="显存" v={formatBytes(runtime.actual_memory || runtime.estimated_memory)} mono />
+          <Kv k="占用内存" v={formatBytes(runtime.actual_memory)} mono />
           <Kv k="活动请求" v={String(runtime.active_requests)} mono />
           <Kv
             k="最近使用"

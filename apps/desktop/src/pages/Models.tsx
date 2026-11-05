@@ -69,9 +69,13 @@ function formatOf(model: Model): string {
   return model.format ? model.format.toUpperCase() : "—";
 }
 
-/** `true` when the engine of the model is part of the application. */
-function isBuiltin(model: Model): boolean {
-  return model.format === "none";
+/** The number of the parameters, e.g. `1.7B`. */
+function parametersOf(model: Model): string {
+  if (!model.parameters) return "—";
+  const billions = model.parameters / 1e9;
+  return billions >= 10
+    ? `${billions.toFixed(0)}B`
+    : `${billions.toFixed(1)}B`;
 }
 
 function matches(model: Model, query: string) {
@@ -213,9 +217,11 @@ export default function Models({
     [local, filter, bySort],
   );
 
+  // Only the downloaded models take up space; the rest of the catalogue is
+  // still on the hub.
   const totalBytes = useMemo(
-    () => models.reduce((sum, model) => sum + model.size_bytes, 0),
-    [models],
+    () => local.reduce((sum, model) => sum + model.size_bytes, 0),
+    [local],
   );
 
   // The order of the results of the hub. The models without a size come
@@ -594,7 +600,7 @@ export default function Models({
             <SortSelect
               value={sort}
               options={[
-                ["memory", "显存估算"],
+                ["memory", "内存估算"],
                 ["size", "文件大小"],
                 ["name", "名称"],
               ]}
@@ -620,7 +626,7 @@ export default function Models({
                     <th>格式</th>
                     <th>参数量</th>
                     <th className="num">文件大小</th>
-                    <th className="num">显存估算</th>
+                    <th className="num">内存估算</th>
                     <th>就绪度</th>
                     <th></th>
                   </tr>
@@ -656,7 +662,7 @@ export default function Models({
                           <Tag tone="tts">{purposeOf(model)}</Tag>
                         </td>
                         <td>{formatOf(model)}</td>
-                        <td>{model.version || "—"}</td>
+                        <td>{parametersOf(model)}</td>
                         <td className="num">{formatBytes(model.size_bytes)}</td>
                         <td className="num">
                           {formatBytes(model.estimated_memory_bytes)}
@@ -693,36 +699,34 @@ export default function Models({
                             >
                               <Icon name="shield" />
                             </button>
-                            {!isBuiltin(model) ? (
-                              confirmDelete === model.id ? (
-                                <button
-                                  className="btn btn--danger"
-                                  type="button"
-                                  title="确认删除"
-                                  aria-label="确认删除"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    setConfirmDelete(null);
-                                    void uninstall(model);
-                                  }}
-                                >
-                                  确认删除
-                                </button>
-                              ) : (
-                                <button
-                                  className="btn btn--icon"
-                                  type="button"
-                                  title="删除"
-                                  aria-label="删除"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    setConfirmDelete(model.id);
-                                  }}
-                                >
-                                  <Icon name="trash" />
-                                </button>
-                              )
-                            ) : null}
+                            {confirmDelete === model.id ? (
+                              <button
+                                className="btn btn--danger"
+                                type="button"
+                                title="确认删除"
+                                aria-label="确认删除"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setConfirmDelete(null);
+                                  void uninstall(model);
+                                }}
+                              >
+                                确认删除
+                              </button>
+                            ) : (
+                              <button
+                                className="btn btn--icon"
+                                type="button"
+                                title="删除"
+                                aria-label="删除"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setConfirmDelete(model.id);
+                                }}
+                              >
+                                <Icon name="trash" />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -963,10 +967,10 @@ export function ModelInspector({ id, tab }: { id: string; tab: string }) {
           <Kv k="仓库" v={model.hf_repo} mono />
           <Kv k="引擎" v={model.engine_id} mono />
           <Kv k="格式" v={formatOf(model)} />
-          <Kv k="参数量" v={model.version || "—"} />
+          <Kv k="参数量" v={parametersOf(model)} />
           <Kv k="文件大小" v={formatBytes(model.size_bytes)} mono />
           <Kv
-            k="显存估算"
+            k="内存估算"
             v={formatBytes(model.estimated_memory_bytes)}
             mono
           />
@@ -1037,28 +1041,26 @@ export function ModelInspector({ id, tab }: { id: string; tab: string }) {
               <Icon name="shield" />
               {model.pinned ? "取消固定" : "固定"}
             </button>
-            {!isBuiltin(model) ? (
-              confirm ? (
-                <button
-                  className="btn btn--danger"
-                  type="button"
-                  onClick={() => {
-                    setConfirm(false);
-                    void uninstall(model);
-                  }}
-                >
-                  确认删除
-                </button>
-              ) : (
-                <button
-                  className="btn btn--ghost"
-                  type="button"
-                  onClick={() => setConfirm(true)}
-                >
-                  删除
-                </button>
-              )
-            ) : null}
+            {confirm ? (
+              <button
+                className="btn btn--danger"
+                type="button"
+                onClick={() => {
+                  setConfirm(false);
+                  void uninstall(model);
+                }}
+              >
+                确认删除
+              </button>
+            ) : (
+              <button
+                className="btn btn--ghost"
+                type="button"
+                onClick={() => setConfirm(true)}
+              >
+                删除
+              </button>
+            )}
           </>
         ) : (
           <button

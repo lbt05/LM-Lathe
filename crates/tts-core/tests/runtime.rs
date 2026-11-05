@@ -11,7 +11,11 @@ use tts_core::types::{EngineMode, ModelFamily, RuntimeState, TTSRequest, TtsFeat
 use tts_core::voice::NewVoiceProfile;
 
 fn service(dir: &TempDir) -> std::sync::Arc<TtsService> {
-    TtsService::with_paths(AppPaths::with_root(dir.path())).unwrap()
+    let service = TtsService::with_paths(AppPaths::with_root(dir.path())).unwrap();
+    // The synthetic model is not part of the catalogue of the application,
+    // the test registers it itself.
+    service.registry.insert(TTSModelSpec::mock_spec());
+    service
 }
 
 /// A second mock model, used to test the one-model-per-instance policy.
@@ -26,6 +30,7 @@ fn second_mock_model() -> TTSModelSpec {
         format: "none".to_string(),
         size_bytes: 0,
         estimated_memory_bytes: 64 * 1024 * 1024,
+        parameters: None,
         features: vec![TtsFeature::TextToSpeech],
         llm_features: vec![],
         files: vec![],

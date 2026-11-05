@@ -41,8 +41,8 @@ cargo build --release
 # Download a checkpoint (the compatibility is checked first)
 ./target/release/tts-server models install qwen3-tts-1.7b-voicedesign
 
-# Speak (the mock engine needs no GPU and no model download)
-./target/release/tts-server speak --model mock --text "你好，世界" --out hello.wav
+# Speak (the model has to be installed and the engine has to run)
+./target/release/tts-server speak --model qwen3-tts-0.6b-customvoice-mlx --text "你好，世界" --out hello.wav
 
 # Start the HTTP API
 ./target/release/tts-server serve --port 54321
@@ -137,10 +137,9 @@ pinned == false AND active_requests == 0 AND idle_duration > TTL
 | `drama-3-int4` | Drama 3 | `fishaudio/drama-3-int4` | 22.4 GiB / 28 GiB | GPTQ, needs compute capability 8.0+ |
 | `drama-3-mlx-4bit` | Drama 3 | `mlx-community/fish-audio-drama-3-4bit` | 22.1 GiB / 29 GiB | Apple Silicon, native MLX runtime |
 | `drama-3-mlx-8bit` | Drama 3 | `mlx-community/fish-audio-drama-3-8bit` | 39.3 GiB / 48 GiB | Apple Silicon, native MLX runtime |
-| `mock-echo` | Mock | – | 64 MiB | Synthetic engine for tests and UI development |
 
 Aliases: `qwen3-tts` → the VoiceDesign checkpoint, `fish-drama-3` / `drama3` →
-`drama-3`, `mock` → `mock-echo`.
+`drama-3`.
 
 The table above is only the catalog that ships with the application. The
 desktop application searches the Hugging Face Hub for the rest:
@@ -475,6 +474,8 @@ workstation, multi GPU TTS and the screenplay editor are out of scope as
 stated in the specification.
 
 The engine adapters are written against the official SGLang-Omni
-documentation and covered by protocol tests, but no checkpoint has been
-loaded on real hardware yet — the mock engine is what exercises the whole
-pipeline in the test suite.
+documentation and covered by protocol tests. The test suite runs against a
+synthetic engine (`cargo test --workspace` switches it on), so that the
+whole pipeline is exercised on a machine without a GPU. The application
+itself is built without it: `cargo build --release -p tts-server` contains
+no mock at all.

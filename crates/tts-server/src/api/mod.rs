@@ -24,8 +24,8 @@ use tts_core::hub::HubClient;
 use tts_core::registry::TTSModelSpec;
 use tts_core::service::TtsService;
 use tts_core::types::{
-    AudioReference, EngineSpecificParameters, FishDrama3Parameters, MockParameters, ModelFamily,
-    Qwen3TtsParameters, Qwen3TtsTaskType, RuntimeState, TTSRequest, TtsFeature,
+    AudioReference, EngineSpecificParameters, FishDrama3Parameters, ModelFamily, Qwen3TtsParameters,
+    Qwen3TtsTaskType, RuntimeState, TTSRequest, TtsFeature,
 };
 use tts_core::voice::{NewVoiceProfile, VoiceFilter, VoicePatch};
 
@@ -89,7 +89,7 @@ pub struct RouteInfo {
 /// The desktop application shows this list on the 服务 page, so it has to
 /// describe the real gateway and not a hand-written copy of it.
 pub const ROUTES: &[RouteInfo] = &[
-    RouteInfo { method: "GET", path: "/health", summary: "服务健康状态与可用显存" },
+    RouteInfo { method: "GET", path: "/health", summary: "服务是否在运行，以及机器还剩多少内存" },
     RouteInfo { method: "GET", path: "/v1/routes", summary: "网关路由表" },
     RouteInfo { method: "GET", path: "/v1/paths", summary: "应用使用的目录与下载设置" },
     RouteInfo { method: "POST", path: "/v1/settings/download-concurrency", summary: "设置同时下载的文件数" },
@@ -295,12 +295,19 @@ fn kind_of(error: &TtsError) -> String {
 }
 
 /// `GET /health`
+///
+/// The answer tells whether the service runs and how much memory the machine
+/// has left. It does not ask the engine: a model that is loaded has its own
+/// endpoint under `/v1/tts/status`.
 async fn health(State(state): State<ApiState>) -> impl IntoResponse {
     let status = state.service.manager.status();
+    // The service is only healthy when it can reach its own directory.
+    let healthy = state.service.paths.root().is_dir();
     axum::Json(serde_json::json!({
-        "status": "ok",
+        "status": if healthy { "ok" } else { "degraded" },
         "active_model": status.active_model,
         "available_bytes": status.scheduler.available_bytes,
+        "free_memory_bytes": status.hardware.available_ram_bytes,
         "build": build_fingerprint(),
         "bind": state.bind,
     }))
@@ -555,6 +562,7 @@ fn model_dto(
         format: spec.format.clone(),
         size_bytes: spec.size_bytes,
         estimated_memory_bytes: spec.estimated_memory_bytes,
+        parameters: spec.parameters,
         features: spec
             .features
             .iter()
@@ -996,8 +1004,7 @@ async fn install_model(
 ) -> Result<Response, ApiError> {
     let spec = resolve_model(&state.service, &id)?;
 
-    // The mock engine is part of the application, there is nothing to
-    // download for it.
+    // A model that is part of the application needs no download.
     if spec.is_builtin() {
         return Err(ApiError(TtsError::InvalidRequest(format!(
             "`{}` 内置于应用，无需下载",
@@ -1284,12 +1291,16 @@ fn parameters_for(
                 seed: request.seed,
             })
         }
-        tts_core::types::ModelFamily::Mock => {
-            EngineSpecificParameters::Mock(MockParameters::default())
-        }
         tts_core::types::ModelFamily::Llm => {
-            EngineSpecificParameters::Mock(MockParameters::default())
+            EngineSpecificParameters::Generic {
+                params: serde_json::Value::Null,
+            }
         }
+        // Every other family speaks a protocol that is not modelled yet.
+        #[allow(unreachable_patterns)]
+        _ => EngineSpecificParameters::Generic {
+            params: serde_json::Value::Null,
+        },
     }
 }
 
@@ -1301,12 +1312,16 @@ fn default_parameters(spec: &TTSModelSpec) -> EngineSpecificParameters {
         tts_core::types::ModelFamily::FishDrama3 => {
             EngineSpecificParameters::FishDrama3(FishDrama3Parameters::default())
         }
-        tts_core::types::ModelFamily::Mock => {
-            EngineSpecificParameters::Mock(MockParameters::default())
-        }
         tts_core::types::ModelFamily::Llm => {
-            EngineSpecificParameters::Mock(MockParameters::default())
+            EngineSpecificParameters::Generic {
+                params: serde_json::Value::Null,
+            }
         }
+        // Every other family speaks a protocol that is not modelled yet.
+        #[allow(unreachable_patterns)]
+        _ => EngineSpecificParameters::Generic {
+            params: serde_json::Value::Null,
+        },
     }
 }
 

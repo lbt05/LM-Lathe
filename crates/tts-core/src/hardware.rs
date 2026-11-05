@@ -7,7 +7,7 @@
 use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
-use sysinfo::System;
+use sysinfo::{ProcessesToUpdate, System};
 
 /// Description of the machine the application runs on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +24,8 @@ pub struct HardwareProfile {
     pub nvidia_gpu: Option<String>,
     /// Total physical memory in bytes.
     pub total_ram_bytes: u64,
+    /// Memory that is free right now, in bytes.
+    pub available_ram_bytes: u64,
 }
 
 impl HardwareProfile {
@@ -39,10 +41,13 @@ impl HardwareProfile {
         let architecture = std::env::consts::ARCH.to_string();
         let apple_silicon = cfg!(target_os = "macos") && architecture == "aarch64";
 
-        let total_ram_bytes = {
+        let (total_ram_bytes, available_ram_bytes) = {
             let mut system = System::new();
             system.refresh_memory();
-            system.total_memory()
+            // macOS does not report the "available" memory, only the free
+            // pages; the larger of the two is the honest answer.
+            let available = system.available_memory().max(system.free_memory());
+            (system.total_memory(), available)
         };
 
         let (cuda_available, nvidia_gpu) = detect_nvidia();
@@ -54,6 +59,7 @@ impl HardwareProfile {
             cuda_available,
             nvidia_gpu,
             total_ram_bytes,
+            available_ram_bytes,
         }
     }
 
@@ -72,6 +78,8 @@ impl HardwareProfile {
             cuda_available,
             nvidia_gpu: None,
             total_ram_bytes,
+            // A profile that is built by hand knows no free memory.
+            available_ram_bytes: 0,
         }
     }
 }
@@ -95,4 +103,15 @@ fn detect_nvidia() -> (bool, Option<String>) {
         }
         _ => (false, None),
     }
+}
+
+/// Reads the memory a process occupies right now.
+///
+/// The value is the resident memory of the process, not an estimate. It is
+/// `None` when the process does not exist any more.
+pub fn process_memory(pid: u32) -> Option<u64> {
+    let pid = sysinfo::Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    system.process(pid).map(|process| process.memory())
 }

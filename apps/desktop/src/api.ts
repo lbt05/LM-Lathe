@@ -15,6 +15,7 @@ export interface Model {
   version: string;
   format: string;
   size_bytes: number;
+  parameters?: number | null;
   estimated_memory_bytes: number;
   features: string[];
   llm_features?: string[];
@@ -76,6 +77,7 @@ export interface Hardware {
   cuda_available: boolean;
   nvidia_gpu: string | null;
   total_ram_bytes: number;
+  available_ram_bytes?: number;
 }
 
 export interface Runtime {
@@ -88,7 +90,7 @@ export interface Runtime {
   last_used_at: string | null;
   active_requests: number;
   estimated_memory: number;
-  actual_memory: number;
+  actual_memory: number | null;
 }
 
 export interface Status {
@@ -248,7 +250,8 @@ export function getBaseUrl() {
 }
 
 /** Turns a byte count into a human readable size. */
-export function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined) return "—";
   if (!bytes) return "0 B";
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
   const exponent = Math.min(

@@ -49,6 +49,11 @@ impl Drop for TempDir {
 
 fn router(dir: &TempDir) -> axum::Router {
     let service = TtsService::with_paths(AppPaths::with_root(dir.path())).unwrap();
+    // The synthetic model is not part of the catalogue of the application,
+    // the test registers it itself.
+    service
+        .registry
+        .insert(tts_core::registry::TTSModelSpec::mock_spec());
     tts_server::api::router(service, "127.0.0.1")
 }
 

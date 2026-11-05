@@ -323,7 +323,7 @@ export default function Runtimes() {
                   <th>引擎</th>
                   <th>状态</th>
                   <th>端点</th>
-                  <th className="num">显存</th>
+                  <th className="num">占用内存</th>
                   <th className="num">请求</th>
                 </tr>
               </thead>
@@ -347,7 +347,7 @@ export default function Runtimes() {
                       <span className="sub">{instance.endpoint ?? "—"}</span>
                     </td>
                     <td className="num">
-                      {formatBytes(instance.actual_memory || instance.estimated_memory)}
+                      {formatBytes(instance.actual_memory)}
                     </td>
                     <td className="num">{instance.active_requests}</td>
                   </tr>
@@ -364,20 +364,46 @@ export default function Runtimes() {
         <SheetHead eyebrow="HARDWARE" title="本机硬件" />
         <div className="facts">
           <Fact k="平台" v={`${hardware?.platform ?? "—"} / ${hardware?.architecture ?? "—"}`} />
-          <Fact k="Apple Silicon" v={hardware?.apple_silicon ? "是" : "否"} />
-          <Fact k="CUDA" v={hardware?.cuda_available ? "可用" : "不可用"} />
+          <Fact
+            k="Apple Silicon"
+            v={hardware ? (hardware.apple_silicon ? "是" : "否") : "—"}
+          />
+          <Fact
+            k="CUDA"
+            v={hardware ? (hardware.cuda_available ? "可用" : "不可用") : "—"}
+          />
           <Fact k="GPU" v={hardware?.nvidia_gpu ?? "—"} />
-          <Fact k="统一内存" v={formatBytes(hardware?.total_ram_bytes ?? 0)} />
+          <Fact
+            k="统一内存"
+            v={hardware ? formatBytes(hardware.total_ram_bytes) : "—"}
+          />
+          <Fact
+            k="空闲内存"
+            v={
+              hardware?.available_ram_bytes !== undefined
+                ? formatBytes(hardware.available_ram_bytes)
+                : "—"
+            }
+          />
         </div>
       </section>
 
       <section className="sheet">
-        <SheetHead eyebrow="SCHEDULER" title="显存调度" />
+        <SheetHead eyebrow="SCHEDULER" title="内存调度" />
         <div className="facts">
-          <Fact k="总池" v={formatBytes(scheduler?.total_bytes ?? 0)} />
-          <Fact k="已预留" v={formatBytes(scheduler?.reserved_bytes ?? 0)} />
-          <Fact k="已用" v={formatBytes(scheduler?.used_bytes ?? 0)} />
-          <Fact k="可用" v={formatBytes(scheduler?.available_bytes ?? 0)} />
+          <Fact k="总池" v={scheduler ? formatBytes(scheduler.total_bytes) : "—"} />
+          <Fact
+            k="已预留"
+            v={scheduler ? formatBytes(scheduler.reserved_bytes) : "—"}
+          />
+          <Fact
+            k="已用"
+            v={scheduler ? formatBytes(scheduler.used_bytes) : "—"}
+          />
+          <Fact
+            k="可用（估算）"
+            v={scheduler ? formatBytes(scheduler.available_bytes) : "—"}
+          />
         </div>
         {scheduler?.tenants.length ? (
           <div className="tablewrap">
@@ -415,7 +441,7 @@ export default function Runtimes() {
             </table>
           </div>
         ) : (
-          <Empty title="没有租约" text="模型加载之后会在这里显示显存租约。" />
+          <Empty title="没有租约" text="模型加载之后会在这里显示内存租约。" />
         )}
       </section>
     </>

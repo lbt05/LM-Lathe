@@ -17,6 +17,7 @@ pub enum ModelFamily {
     /// A language model served by llama.cpp.
     Llm,
     /// Synthetic model used for tests and for running the UI without a GPU.
+    #[cfg(feature = "mock-engine")]
     Mock,
 }
 
@@ -26,6 +27,7 @@ impl ModelFamily {
             ModelFamily::Qwen3Tts => "qwen3-tts",
             ModelFamily::FishDrama3 => "fish-drama-3",
             ModelFamily::Llm => "llm",
+            #[cfg(feature = "mock-engine")]
             ModelFamily::Mock => "mock",
         }
     }
@@ -85,8 +87,8 @@ impl TtsFeature {
 /// How the inference engine is launched.
 ///
 /// `SglangOmni` is the CUDA path (`sgl-omni serve`), `MlxNative` is the
-/// Apple Silicon path (`fishaudio_drama3_server`) and `Mock` needs no engine
-/// at all.
+/// Apple Silicon path (`fishaudio_drama3_server`) and `LlamaCpp` serves the
+/// GGUF checkpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EngineMode {
@@ -95,6 +97,8 @@ pub enum EngineMode {
     MlxNative,
     /// A GGUF checkpoint served by llama.cpp.
     LlamaCpp,
+    /// The synthetic engine of the tests.
+    #[cfg(feature = "mock-engine")]
     Mock,
 }
 
@@ -104,6 +108,7 @@ impl EngineMode {
             EngineMode::SglangOmni => "sglang_omni",
             EngineMode::MlxNative => "mlx_native",
             EngineMode::LlamaCpp => "llama_cpp",
+            #[cfg(feature = "mock-engine")]
             EngineMode::Mock => "mock",
         }
     }
@@ -277,6 +282,7 @@ pub struct FishDrama3Parameters {
 }
 
 /// Parameters of the mock engine.
+#[cfg(feature = "mock-engine")]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MockParameters {
@@ -295,6 +301,8 @@ pub struct MockParameters {
 pub enum EngineSpecificParameters {
     Qwen3Tts(Qwen3TtsParameters),
     FishDrama3(FishDrama3Parameters),
+    /// The parameters of the synthetic engine of the tests.
+    #[cfg(feature = "mock-engine")]
     Mock(MockParameters),
     /// Escape hatch for engines that are not modelled yet.
     Generic {

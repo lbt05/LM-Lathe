@@ -7,8 +7,8 @@ use clap::{Args, Parser, Subcommand};
 use tts_core::paths::AppPaths;
 use tts_core::service::TtsService;
 use tts_core::types::{
-    AudioFormat, EngineSpecificParameters, FishDrama3Parameters, MockParameters,
-    Qwen3TtsParameters, Qwen3TtsTaskType, TTSRequest,
+    AudioFormat, EngineSpecificParameters, FishDrama3Parameters, Qwen3TtsParameters,
+    Qwen3TtsTaskType, TTSRequest,
 };
 use tts_core::voice::{NewVoiceProfile, VoiceFilter};
 
@@ -696,12 +696,14 @@ async fn render_preview(
         tts_core::types::ModelFamily::FishDrama3 => {
             EngineSpecificParameters::FishDrama3(FishDrama3Parameters::default())
         }
-        tts_core::types::ModelFamily::Mock => {
-            EngineSpecificParameters::Mock(MockParameters::default())
-        }
         tts_core::types::ModelFamily::Llm => {
             return Err(anyhow::anyhow!("`{}` is a language model", spec.id))
         }
+        // Every other family speaks a protocol that is not modelled yet.
+        #[allow(unreachable_patterns)]
+        _ => EngineSpecificParameters::Generic {
+            params: serde_json::Value::Null,
+        },
     };
     let request = TTSRequest {
         model_id: spec.id.clone(),
@@ -738,12 +740,14 @@ async fn speak(service: std::sync::Arc<TtsService>, args: SpeakArgs) -> Result<(
         tts_core::types::ModelFamily::FishDrama3 => {
             EngineSpecificParameters::FishDrama3(FishDrama3Parameters::default())
         }
-        tts_core::types::ModelFamily::Mock => {
-            EngineSpecificParameters::Mock(MockParameters::default())
-        }
         tts_core::types::ModelFamily::Llm => {
             return Err(anyhow::anyhow!("`{}` is a language model", spec.id))
         }
+        // Every other family speaks a protocol that is not modelled yet.
+        #[allow(unreachable_patterns)]
+        _ => EngineSpecificParameters::Generic {
+            params: serde_json::Value::Null,
+        },
     };
     let request = TTSRequest {
         model_id: spec.id.clone(),

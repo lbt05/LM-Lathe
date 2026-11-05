@@ -14,6 +14,7 @@
 pub mod engine;
 pub mod factory;
 pub mod fish_drama3;
+#[cfg(feature = "mock-engine")]
 pub mod mock;
 pub mod protocol;
 pub mod qwen3_tts;
@@ -28,6 +29,7 @@ use crate::types::{
 pub use engine::{EngineSettings, SGLangOmniAdapter};
 pub use factory::AdapterFactory;
 pub use fish_drama3::FishDrama3Adapter;
+#[cfg(feature = "mock-engine")]
 pub use mock::MockAdapter;
 pub use protocol::{ModelProtocol, RequestContext, VoiceHints};
 pub use qwen3_tts::Qwen3TTSAdapter;

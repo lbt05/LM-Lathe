@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::adapter::engine::{EngineSettings, SGLangOmniAdapter};
 use crate::adapter::fish_drama3::{FishDrama3Adapter, FishDrama3Protocol};
+#[cfg(feature = "mock-engine")]
 use crate::adapter::mock::MockAdapter;
 use crate::adapter::qwen3_tts::{Qwen3TTSAdapter, Qwen3TTSProtocol};
 use crate::adapter::TTSAdapter;
@@ -47,6 +48,7 @@ impl AdapterFactory {
             ModelFamily::FishDrama3 => {
                 Arc::new(FishDrama3Adapter::new(self.engine.clone())) as Arc<dyn TTSAdapter>
             }
+            #[cfg(feature = "mock-engine")]
             ModelFamily::Mock => Arc::new(MockAdapter::new()) as Arc<dyn TTSAdapter>,
             ModelFamily::Llm => {
                 return Err(TtsError::AdapterNotFound(

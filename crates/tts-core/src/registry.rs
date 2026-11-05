@@ -119,6 +119,9 @@ pub struct TTSModelSpec {
     /// Memory the runtime is expected to occupy while serving.
     #[serde(default)]
     pub estimated_memory_bytes: u64,
+    /// Number of the parameters of the model, when it is known.
+    #[serde(default)]
+    pub parameters: Option<u64>,
     /// Capabilities of the model.
     #[serde(default)]
     pub features: Vec<TtsFeature>,
@@ -163,12 +166,60 @@ impl TTSModelSpec {
             .unwrap_or(false)
     }
 
+    /// The synthetic model of the tests.
+    ///
+    /// The model is not part of the catalogue: only the tests insert it into
+    /// the registry, so that the application never offers it.
+    #[cfg(feature = "mock-engine")]
+    pub fn mock_spec() -> TTSModelSpec {
+        TTSModelSpec {
+            id: "mock-echo".to_string(),
+            name: "Mock Echo (test)".to_string(),
+            family: ModelFamily::Mock,
+            engine_id: "mock".to_string(),
+            hf_repo: "mock://echo".to_string(),
+            version: "1".to_string(),
+            format: "none".to_string(),
+            size_bytes: 0,
+            estimated_memory_bytes: 64 * 1024 * 1024,
+            parameters: None,
+            features: vec![
+                TtsFeature::TextToSpeech,
+                TtsFeature::VoiceDesign,
+                TtsFeature::VoiceCloning,
+                TtsFeature::CustomVoice,
+                TtsFeature::MultiSpeaker,
+                TtsFeature::PointTags,
+                TtsFeature::Streaming,
+            ],
+            hardware: HardwareRequirement {
+                notes: Some("Synthetic engine of the tests.".to_string()),
+                ..Default::default()
+            },
+            mode: EngineMode::Mock,
+            default_ttl_secs: Some(300),
+            aliases: vec!["mock".to_string()],
+            launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
+            local_path: None,
+            notes: None,
+        }
+    }
+
     /// `true` when the engine of the model is part of the application.
     ///
     /// The mock engine needs no checkpoint on the disk, so there is nothing
     /// to download for it.
     pub fn is_builtin(&self) -> bool {
-        self.mode == EngineMode::Mock
+        #[cfg(feature = "mock-engine")]
+        {
+            self.mode == EngineMode::Mock
+        }
+        #[cfg(not(feature = "mock-engine"))]
+        {
+            false
+        }
     }
 
     /// `true` when the model exposes the given capability.
@@ -475,6 +526,7 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             format: "safetensors".to_string(),
             size_bytes: 4_520_163_832,
             estimated_memory_bytes: 8 * GB,
+            parameters: Some(1916676352),
             features: vec![
                 TtsFeature::TextToSpeech,
                 TtsFeature::VoiceDesign,
@@ -513,6 +565,7 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             format: "safetensors".to_string(),
             size_bytes: 4_520_218_951,
             estimated_memory_bytes: 8 * GB,
+            parameters: Some(1916676352),
             features: vec![
                 TtsFeature::TextToSpeech,
                 TtsFeature::CustomVoice,
@@ -546,6 +599,7 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             format: "safetensors".to_string(),
             size_bytes: 4_544_229_700,
             estimated_memory_bytes: 8 * GB,
+            parameters: Some(1928677440),
             features: vec![
                 TtsFeature::TextToSpeech,
                 TtsFeature::VoiceCloning,
@@ -576,6 +630,7 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             format: "safetensors".to_string(),
             size_bytes: 2_516_106_051,
             estimated_memory_bytes: 4 * GB,
+            parameters: Some(914643008),
             features: vec![
                 TtsFeature::TextToSpeech,
                 TtsFeature::VoiceCloning,
@@ -606,6 +661,7 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             format: "safetensors".to_string(),
             size_bytes: 2_498_419_405,
             estimated_memory_bytes: 8 * GB,
+            parameters: Some(905788672),
             features: vec![
                 TtsFeature::TextToSpeech,
                 TtsFeature::VoiceCloning,
@@ -641,6 +697,7 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             format: "safetensors (fp8 experts)".to_string(),
             size_bytes: 41_502_571_262,
             estimated_memory_bytes: 45 * GB,
+            parameters: Some(35899643008),
             features: vec![
                 TtsFeature::TextToSpeech,
                 TtsFeature::VoiceCloning,
@@ -682,6 +739,7 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             format: "safetensors (gptq int4)".to_string(),
             size_bytes: 24_029_281_487,
             estimated_memory_bytes: 28 * GB,
+            parameters: Some(35899643008),
             features: vec![
                 TtsFeature::TextToSpeech,
                 TtsFeature::VoiceCloning,
@@ -721,6 +779,7 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             format: "safetensors (mlx)".to_string(),
             size_bytes: 23_781_119_297,
             estimated_memory_bytes: 29 * GB,
+            parameters: Some(35899643008),
             features: vec![
                 TtsFeature::TextToSpeech,
                 TtsFeature::VoiceCloning,
@@ -762,6 +821,7 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             format: "safetensors (mlx)".to_string(),
             size_bytes: 42_177_609_321,
             estimated_memory_bytes: 48 * GB,
+            parameters: Some(35899643008),
             features: vec![
                 TtsFeature::TextToSpeech,
                 TtsFeature::VoiceCloning,
@@ -780,38 +840,6 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             mode: EngineMode::MlxNative,
             default_ttl_secs: None,
             aliases: vec![],
-            launch_args: vec![],
-            llm_features: vec![],
-            files: vec![],
-            local_path: None,
-            notes: None,
-        },
-        TTSModelSpec {
-            id: "mock-echo".to_string(),
-            name: "Mock Echo (development)".to_string(),
-            family: ModelFamily::Mock,
-            engine_id: "mock".to_string(),
-            hf_repo: "mock://echo".to_string(),
-            version: "1".to_string(),
-            format: "none".to_string(),
-            size_bytes: 0,
-            estimated_memory_bytes: 64 * 1024 * 1024,
-            features: vec![
-                TtsFeature::TextToSpeech,
-                TtsFeature::VoiceDesign,
-                TtsFeature::VoiceCloning,
-                TtsFeature::CustomVoice,
-                TtsFeature::MultiSpeaker,
-                TtsFeature::PointTags,
-                TtsFeature::Streaming,
-            ],
-            hardware: HardwareRequirement {
-                notes: Some("Synthetic engine for tests and UI development.".to_string()),
-                ..Default::default()
-            },
-            mode: EngineMode::Mock,
-            default_ttl_secs: Some(300),
-            aliases: vec!["mock".to_string()],
             launch_args: vec![],
             llm_features: vec![],
             files: vec![],
@@ -840,6 +868,7 @@ pub fn builtin_llm_models() -> Vec<TTSModelSpec> {
             format: "gguf".to_string(),
             size_bytes: 5_027_783_488,
             estimated_memory_bytes: 6 * GB,
+            parameters: Some(8000000000),
             features: vec![],
             llm_features: vec![
                 LlmFeature::Chat,
@@ -878,6 +907,7 @@ pub fn builtin_llm_models() -> Vec<TTSModelSpec> {
             format: "gguf".to_string(),
             size_bytes: 2_503_216_896,
             estimated_memory_bytes: 3 * GB,
+            parameters: Some(4000000000),
             features: vec![],
             llm_features: vec![
                 LlmFeature::Chat,
@@ -912,6 +942,7 @@ pub fn builtin_llm_models() -> Vec<TTSModelSpec> {
             format: "gguf".to_string(),
             size_bytes: 42_515_362_560,
             estimated_memory_bytes: 48 * GB,
+            parameters: Some(70000000000),
             features: vec![],
             llm_features: vec![
                 LlmFeature::Chat,

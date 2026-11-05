@@ -254,6 +254,9 @@ pub struct ModelDto {
     pub size_bytes: u64,
     /// Expected memory usage.
     pub estimated_memory_bytes: u64,
+    /// Number of the parameters of the model, when it is known.
+    #[serde(default)]
+    pub parameters: Option<u64>,
     /// Capabilities.
     pub features: Vec<String>,
     /// Capabilities of a language model.

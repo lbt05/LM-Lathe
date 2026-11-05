@@ -6,6 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 description = "TTS subsystem of the local AI runtime manager: model registry, engine adapters, voice library and audio manager."
 
+[features]
+# The mock engine exists only for the tests. It produces a sine wave instead
+# of speech and makes the whole pipeline testable on a machine without a
+# GPU. The application is built without it.
+mock-engine = []
+
 [dependencies]
 ai-scheduler.workspace = true
 async-trait.workspace = true
@@ -26,3 +32,9 @@ zip.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+# The tests of the crate need the mock engine. The dependency on itself
+# switches the feature on for the test build and leaves the application
+# build untouched.
+[dev-dependencies]
+tts-core = { path = ".", features = ["mock-engine"] }
