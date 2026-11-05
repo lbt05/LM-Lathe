@@ -20,6 +20,7 @@ import {
   api,
   setBaseUrl,
   type EngineAsset,
+  type Install,
   type Model,
   type Paths,
   type Route,
@@ -109,6 +110,7 @@ interface Store {
   queue: InstallJob[];
   enqueue: (job: InstallJob) => void;
   retryInstall: (job: InstallJob) => void;
+  cancelInstall: (job: InstallJob) => void;
 
   theme: Theme;
   setTheme: (theme: Theme) => void;
@@ -370,6 +372,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               void refresh();
               return;
             }
+            if (progress.state === "cancelled") {
+              // The user stopped the download: the job stays in the queue,
+              // the download continues where it stopped.
+              const known = queueRef.current.find((item) => item.id === job.id);
+              setQueue((current) =>
+                current.map((item) =>
+                  item.id === job.id ? { ...item, state: "cancelled" } : item,
+                ),
+              );
+              if (known?.state !== "cancelled") {
+                log("warn", `${job.name} 下载已取消`);
+              }
+              return;
+            }
             if (progress.state === "failed") {
               // The download failed: the job stays in the queue, so that the
               // user can repeat it. The server continues the interrupted
@@ -400,7 +416,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                       percent,
                       bytes: progress.bytes || item.bytes,
                       bytesTotal: progress.bytes_total || item.bytesTotal,
-                      state: progress.state,
+                      // The service does not know a download that it did not
+                      // start itself: the state of the queue stays.
+                      state: progress.state === "idle" ? item.state : progress.state,
                     }
                   : item,
               ),
@@ -435,12 +453,78 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setQueue((current) =>
           current.map((item) =>
             item.id === job.id
-              ? { ...item, percent: 0, bytes: 0, state: "running", error: undefined }
+              ? { ...item, state: "running", error: undefined }
               : item,
           ),
         );
-        log("info", `重新下载 ${job.name}`);
-        notify(`正在重试：${job.name}`);
+        // The bytes that are already on the disk stay: the server continues
+        // the download at this byte.
+        log("info", `继续下载 ${job.name}`);
+        notify(`正在继续下载：${job.name}`);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : String(err), "bad");
+      }
+    },
+    [log, notify],
+  );
+
+  // The downloads that the service still knows about are shown again, also
+  // after a restart of the interface: the download continues on the server
+  // even when no window is open.
+  const restoreQueue = useCallback(async () => {
+    let installs: Install[] = [];
+    try {
+      installs = await api.installs();
+    } catch {
+      return;
+    }
+    const known = queueRef.current;
+    const restored: InstallJob[] = installs
+      .filter(
+        (install) =>
+          install.state === "running" ||
+          install.state === "failed" ||
+          install.state === "cancelled" ||
+          install.state === "partial",
+      )
+      .map((install) => ({
+        id: install.model_id,
+        name: install.name,
+        percent: install.bytes_total
+          ? Math.min(100, (install.bytes / install.bytes_total) * 100)
+          : 0,
+        bytes: install.bytes,
+        bytesTotal: install.bytes_total,
+        state: install.state,
+        error: install.error ?? undefined,
+      }))
+      .filter((job) => !known.some((item) => item.id === job.id));
+    if (!restored.length) return;
+    setQueue((current) => [
+      ...current.filter((item) => !restored.some((job) => job.id === item.id)),
+      ...restored,
+    ]);
+    log("info", `继续显示 ${restored.length} 个下载`);
+  }, [log]);
+
+  // Sobald der Dienst steht, zeigt die Warteschlange die Downloads wieder,
+  // die im Hintergrund weiterlaufen.
+  useEffect(() => {
+    if (!base) return;
+    void restoreQueue();
+  }, [base, restoreQueue]);
+
+  const cancelInstall = useCallback(
+    async (job: InstallJob) => {
+      try {
+        await api.cancelInstall(job.id);
+        setQueue((current) =>
+          current.map((item) =>
+            item.id === job.id ? { ...item, state: "cancelled" } : item,
+          ),
+        );
+        log("warn", `已取消下载 ${job.name}`);
+        notify(`已取消下载 ${job.name}`);
       } catch (err) {
         notify(err instanceof Error ? err.message : String(err), "bad");
       }
@@ -522,6 +606,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       queue,
       enqueue,
       retryInstall,
+      cancelInstall,
       theme,
       setTheme,
     }),
@@ -550,6 +635,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       queue,
       enqueue,
       retryInstall,
+      cancelInstall,
       theme,
       setTheme,
     ],

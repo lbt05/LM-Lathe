@@ -106,6 +106,15 @@ impl InstallTracker {
         }
     }
 
+    /// Marks an installation as cancelled.
+    pub fn cancel(&self, model_id: &str) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(progress) = entries.get_mut(model_id) {
+            progress.state = "cancelled".to_string();
+            progress.error = None;
+        }
+    }
+
     /// The progress of one installation.
     pub fn get(&self, model_id: &str) -> Option<InstallProgress> {
         let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
@@ -130,6 +139,10 @@ pub struct ModelInstaller {
     token: Option<String>,
     /// How many files of a repository are fetched at the same time.
     concurrency: std::sync::atomic::AtomicUsize,
+    /// How often a download of a model was stopped, one number per model.
+    /// A download that starts reads the number and stops when it changes, so
+    /// that a cancellation of an earlier download does not stop a new one.
+    cancels: std::sync::Mutex<HashMap<String, u64>>,
 }
 
 impl ModelInstaller {
@@ -150,6 +163,7 @@ impl ModelInstaller {
                 .filter(|token| !token.trim().is_empty()),
             // One file at a time; the user can raise the number.
             concurrency: std::sync::atomic::AtomicUsize::new(1),
+            cancels: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -250,6 +264,9 @@ impl ModelInstaller {
         spec: &TTSModelSpec,
         tracker: Option<&InstallTracker>,
     ) -> TtsResult<InstallReport> {
+        // The download stops when the number of cancellations changes while
+        // it runs.
+        let cancellations = self.cancel_count(&spec.id);
         let files = self.list_files(spec).await?;
         let root = self.target_dir(spec);
         let mut report = InstallReport {
@@ -310,8 +327,19 @@ impl ModelInstaller {
         // connections stays where the user put it.
         let concurrency = self.concurrency();
         for group in pending.chunks(concurrency) {
+            if self.cancel_count(&spec.id) != cancellations {
+                // The files that were fetched so far stay on the disk as they
+                // are, the next attempt continues where it stopped.
+                if let Some(tracker) = tracker {
+                    tracker.cancel(&spec.id);
+                }
+                return Err(TtsError::Cancelled(format!(
+                    "the download of `{}` was cancelled",
+                    spec.id
+                )));
+            }
             let downloads = group.iter().map(|(file, destination)| {
-                self.download_file(spec, file, destination, tracker, &counter)
+                self.download_file(spec, file, destination, tracker, &counter, cancellations)
             });
             let results = futures::future::join_all(downloads).await;
             for ((file, _), fetched) in group.iter().zip(results) {
@@ -348,6 +376,7 @@ impl ModelInstaller {
         destination: &Path,
         tracker: Option<&InstallTracker>,
         counter: &std::sync::atomic::AtomicU64,
+        cancellations: u64,
     ) -> TtsResult<u64> {
         let part = part_path(destination);
 
@@ -414,6 +443,14 @@ impl ModelInstaller {
         while let Some(chunk) = response.chunk().await.map_err(|err| {
             TtsError::Engine(format!("failed to download `{}`: {err}", file.path))
         })? {
+            if self.cancel_count(&spec.id) != cancellations {
+                // The part file stays where it is: the next attempt
+                // continues the download at this byte.
+                return Err(TtsError::Cancelled(format!(
+                    "the download of `{}` was cancelled",
+                    spec.id
+                )));
+            }
             tokio::io::AsyncWriteExt::write_all(&mut sink, &chunk)
                 .await
                 .map_err(|source| TtsError::io(&part, source))?;
@@ -449,6 +486,22 @@ impl ModelInstaller {
         })?;
 
         Ok(received)
+    }
+
+    /// Stops a running download of a model. The files that are already on
+    /// the disk stay there, the next attempt continues them.
+    pub fn cancel(&self, model_id: &str) -> bool {
+        let mut cancels = self.cancels.lock().unwrap_or_else(|e| e.into_inner());
+        let counter = cancels.entry(model_id.to_string()).or_insert(0);
+        *counter += 1;
+        tracing::info!(model = %model_id, "the download was cancelled");
+        true
+    }
+
+    /// How often the download of a model was stopped.
+    fn cancel_count(&self, model_id: &str) -> u64 {
+        let cancels = self.cancels.lock().unwrap_or_else(|e| e.into_inner());
+        cancels.get(model_id).copied().unwrap_or(0)
     }
 
     /// Removes the checkpoint from the disk.

@@ -153,6 +153,18 @@ export interface DiscoveredModels {
   dropped: number;
 }
 
+/** The progress of one download, with the name of the model. */
+export interface Install {
+  model_id: string;
+  name: string;
+  state: string;
+  files_done: number;
+  files_total: number;
+  bytes: number;
+  bytes_total: number;
+  error?: string | null;
+}
+
 export interface InstallProgress {
   model_id: string;
   state: string;
@@ -367,6 +379,11 @@ export const api = {
     }),
   installProgress: (id: string) =>
     request<InstallProgress>(`/v1/tts/models/${id}/install`),
+  /** Every download the service knows about. */
+  installs: () => request<Install[]>("/v1/tts/installs"),
+  /** Stops a running download. The files that are already there stay. */
+  cancelInstall: (id: string) =>
+    request<void>(`/v1/tts/models/${id}/install/cancel`, { method: "POST" }),
   modelLogs: async (id: string) => {
     const response = await fetch(`${baseUrl}/v1/tts/models/${id}/logs`);
     return response.text();

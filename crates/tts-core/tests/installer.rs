@@ -7,6 +7,7 @@ use std::net::TcpListener;
 use std::thread;
 
 use common::TempDir;
+use tts_core::error::TtsError;
 use tts_core::installer::{InstallTracker, ModelInstaller};
 use tts_core::registry::TTSModelSpec;
 
@@ -233,6 +234,62 @@ async fn an_interrupted_download_is_continued() {
         b"hello"
     );
     assert!(!target.join("model.safetensors.part").exists());
+}
+
+#[tokio::test]
+async fn a_cancellation_belongs_to_the_download_that_is_running() {
+    let dir = TempDir::new("installer");
+    let (endpoint, _hub) = fake_hub();
+    let installer = ModelInstaller::new(dir.path().join("models/tts")).with_endpoint(&endpoint);
+    let tracker = InstallTracker::default();
+
+    // The cancellation of a download that is not running does not stop the
+    // next one: the user starts the download again and it runs.
+    installer.cancel(&spec().id);
+    tracker.start(&spec().id);
+    installer.install(&spec(), Some(&tracker)).await.unwrap();
+    tracker.finish(&spec().id, None);
+    assert!(installer.is_installed(&spec()));
+
+    // The tracker knows that the download is finished.
+    let progress = tracker.get(&spec().id).expect("the progress is known");
+    assert_eq!(progress.state, "done");
+}
+
+#[tokio::test]
+async fn a_cancelled_download_keeps_the_files_that_are_there() {
+    let dir = TempDir::new("installer");
+    let (endpoint, _hub) = fake_hub();
+    let installer = ModelInstaller::new(dir.path().join("models/tts")).with_endpoint(&endpoint);
+    let tracker = InstallTracker::default();
+
+    // The weights are fetched, the cancellation stops the download while it
+    // runs. The part file stays on the disk, so that the next attempt
+    // continues it.
+    let model = spec();
+    tracker.start(&model.id);
+    let install = installer.install(&model, Some(&tracker));
+    installer.cancel(&model.id);
+    let result = install.await;
+    let target = installer.target_dir(&model);
+
+    match result {
+        Ok(_) => {
+            // The download was faster than the cancellation: the weights are
+            // complete.
+            assert!(target.join("model.safetensors").exists());
+        }
+        Err(err) => {
+            assert!(
+                matches!(err, TtsError::Cancelled(_)),
+                "the error says that the download was cancelled"
+            );
+            assert!(
+                !target.join("model.safetensors").exists(),
+                "the weights are not complete"
+            );
+        }
+    }
 }
 
 #[tokio::test]

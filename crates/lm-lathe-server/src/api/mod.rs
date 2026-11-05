@@ -115,6 +115,8 @@ pub const ROUTES: &[RouteInfo] = &[
     RouteInfo { method: "POST", path: "/v1/tts/models/{id}/unpin", summary: "取消固定" },
     RouteInfo { method: "POST", path: "/v1/tts/models/{id}/install", summary: "下载模型" },
     RouteInfo { method: "GET", path: "/v1/tts/models/{id}/install", summary: "下载进度" },
+    RouteInfo { method: "POST", path: "/v1/tts/models/{id}/install/cancel", summary: "取消下载" },
+    RouteInfo { method: "GET", path: "/v1/tts/installs", summary: "所有下载的进度" },
     RouteInfo { method: "POST", path: "/v1/tts/models/{id}/uninstall", summary: "删除本地模型" },
     RouteInfo { method: "GET", path: "/v1/tts/models/{id}/logs", summary: "引擎日志" },
     RouteInfo { method: "GET", path: "/v1/tts/discover", summary: "在 Hugging Face 上搜索模型" },
@@ -169,6 +171,8 @@ pub fn router(service: Arc<TtsService>, bind: &str) -> Router {
         .route("/v1/tts/models/{id}/unpin", post(unpin_model))
         .route("/v1/tts/models/{id}/install", post(install_model))
         .route("/v1/tts/models/{id}/install", get(install_progress))
+        .route("/v1/tts/models/{id}/install/cancel", post(cancel_install))
+        .route("/v1/tts/installs", get(list_installs))
         .route("/v1/tts/models/{id}/uninstall", post(uninstall_model))
         .route("/v1/tts/models/{id}/logs", get(model_logs))
         .route("/v1/tts/discover", get(discover_models))
@@ -564,15 +568,34 @@ fn start_install(state: &ApiState, spec: TTSModelSpec) -> Result<Response, ApiEr
             .installer
             .install(&spec, Some(&service.installs))
             .await;
-        service
-            .installs
-            .finish(&spec.id, result.as_ref().err().map(|err| err.to_string()));
+        finish_install(&service, &spec.id, result);
     });
     Ok((
         StatusCode::ACCEPTED,
         axum::Json(serde_json::json!({ "model_id": model_id, "name": name })),
     )
         .into_response())
+}
+
+/// Puts the end of an installation into the log: a download that the user
+/// stopped is not a failure, the files that are already there stay and the
+/// next attempt continues them.
+fn finish_install(
+    service: &TtsService,
+    model_id: &str,
+    result: Result<tts_core::installer::InstallReport, TtsError>,
+) {
+    match result {
+        Ok(_) => service.installs.finish(model_id, None),
+        Err(err) => {
+            if matches!(err, TtsError::Cancelled(_)) {
+                service.installs.cancel(model_id);
+                tracing::info!(model = %model_id, "the download was cancelled");
+            } else {
+                service.installs.finish(model_id, Some(err.to_string()));
+            }
+        }
+    }
 }
 
 /// `true` when the checkpoint of the model is on the disk and the machine can
@@ -1136,9 +1159,7 @@ async fn install_model(
             .installer
             .install(&spec, Some(&service.installs))
             .await;
-        service
-            .installs
-            .finish(&spec.id, result.as_ref().err().map(|err| err.to_string()));
+        finish_install(&service, &spec.id, result);
     });
 
     Ok((StatusCode::ACCEPTED, "the installation has started").into_response())
@@ -1162,6 +1183,114 @@ async fn install_progress(
         }
     });
     Ok(axum::Json(progress).into_response())
+}
+
+/// `POST /v1/tts/models/{id}/install/cancel`
+///
+/// Stops a running download. The files that are already on the disk stay
+/// there, the next attempt continues them.
+async fn cancel_install(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let spec = resolve_model(&state.service, &id)?;
+    state.service.installer.cancel(&spec.id);
+    state.service.installs.cancel(&spec.id);
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The progress of one download, with the name of the model.
+#[derive(Debug, serde::Serialize)]
+struct InstallDto {
+    model_id: String,
+    name: String,
+    state: String,
+    files_done: usize,
+    files_total: usize,
+    bytes: u64,
+    bytes_total: u64,
+    error: Option<String>,
+}
+
+/// `GET /v1/tts/installs`
+///
+/// The progress of every download the service knows about. The interface
+/// uses it to show the downloads that are still running after a restart.
+async fn list_installs(State(state): State<ApiState>) -> Result<Response, ApiError> {
+    let mut list: Vec<InstallDto> = state
+        .service
+        .installs
+        .list()
+        .into_iter()
+        .map(|progress| {
+            let name = state
+                .service
+                .registry
+                .get(&progress.model_id)
+                .map(|spec| spec.name.clone())
+                .unwrap_or_else(|| progress.model_id.clone());
+            InstallDto {
+                model_id: progress.model_id,
+                name,
+                state: progress.state,
+                files_done: progress.files_done,
+                files_total: progress.files_total,
+                bytes: progress.bytes,
+                bytes_total: progress.bytes_total,
+                error: progress.error,
+            }
+        })
+        .collect();
+
+    // The downloads that were interrupted by a restart of the service: the
+    // part files are still on the disk, the next attempt continues them.
+    for spec in state.service.registry.list() {
+        if list.iter().any(|entry| entry.model_id == spec.id) {
+            continue;
+        }
+        let directory = state.service.installer.target_dir(&spec);
+        let bytes = part_files_size(&directory);
+        if bytes == 0 {
+            continue;
+        }
+        let files = state
+            .service
+            .installer
+            .list_files(&spec)
+            .await
+            .unwrap_or_default();
+        let bytes_total: u64 = files.iter().filter_map(|file| file.size).sum();
+        list.push(InstallDto {
+            model_id: spec.id.clone(),
+            name: spec.name.clone(),
+            state: "partial".to_string(),
+            files_done: 0,
+            files_total: files.len(),
+            bytes,
+            bytes_total,
+            error: None,
+        });
+    }
+    Ok(axum::Json(list).into_response())
+}
+
+/// The size of the files that a download left behind.
+fn part_files_size(directory: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .map(|name| name.ends_with(".part"))
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| entry.metadata().ok())
+        .map(|meta| meta.len())
+        .sum()
 }
 
 /// `POST /v1/tts/models/{id}/uninstall`

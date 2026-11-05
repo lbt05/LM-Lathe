@@ -443,11 +443,43 @@ export default function Models({
                         type="button"
                         onClick={() => void store.retryInstall(job)}
                       >
-                        重试
+                        {job.bytes > 0 ? "继续下载" : "重试"}
+                      </button>
+                    </>
+                  ) : job.state === "partial" ? (
+                    <>
+                      <Tag tone="warn">未完成</Tag>
+                      <button
+                        className="btn btn--ghost"
+                        type="button"
+                        onClick={() => void store.retryInstall(job)}
+                      >
+                        继续下载
+                      </button>
+                    </>
+                  ) : job.state === "cancelled" ? (
+                    <>
+                      <Tag tone="idle">已取消</Tag>
+                      <button
+                        className="btn btn--ghost"
+                        type="button"
+                        onClick={() => void store.retryInstall(job)}
+                      >
+                        {job.bytes > 0 ? "继续下载" : "重新下载"}
                       </button>
                     </>
                   ) : (
-                    <Tag tone="info">下载中</Tag>
+                    <>
+                      <Tag tone="info">下载中</Tag>
+                      <button
+                        className="btn btn--ghost"
+                        type="button"
+                        title="取消下载，已经下载的部分会保留"
+                        onClick={() => void store.cancelInstall(job)}
+                      >
+                        取消
+                      </button>
+                    </>
                   )}
                 </span>
               </div>
