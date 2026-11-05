@@ -513,7 +513,9 @@ export default function Models({
                                 ? `${model.quant} · 只下载这一个量化`
                                 : model.format === "gguf"
                                   ? "GGUF 权重"
-                                  : "safetensors 权重"}
+                                  : model.format === "mlx"
+                                    ? "MLX 权重"
+                                    : "safetensors 权重"}
                             </span>
                           </span>
                         </td>

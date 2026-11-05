@@ -382,7 +382,7 @@ impl HubModel {
     pub fn family(&self) -> Option<ModelFamily> {
         match self.pipeline_tag.as_deref() {
             Some("text-to-speech") | Some("text-to-speech-v2") => {
-                Some(ModelFamily::Qwen3Tts)
+                Some(self.speech_family())
             }
             Some("text-generation") | Some("image-text-to-text") | Some("text-to-text") => {
                 Some(ModelFamily::Llm)
@@ -392,10 +392,25 @@ impl HubModel {
                     Some(ModelFamily::Llm)
                 } else if self.is_qwen3_tts() {
                     Some(ModelFamily::Qwen3Tts)
+                } else if self.is_drama3() {
+                    Some(ModelFamily::FishDrama3)
                 } else {
                     None
                 }
             }
+        }
+    }
+
+    /// The family of a speech repository.
+    ///
+    /// Two families of speech models are spoken by the application: the
+    /// Qwen3-TTS ones and the Fish Audio Drama 3 ones. Both are served by
+    /// the same runtime, but they carry different weights.
+    fn speech_family(&self) -> ModelFamily {
+        if self.is_drama3() {
+            ModelFamily::FishDrama3
+        } else {
+            ModelFamily::Qwen3Tts
         }
     }
 
@@ -436,6 +451,23 @@ impl HubModel {
             || self.id.to_lowercase().contains("qwen3-tts")
     }
 
+    /// `true` when the repository holds a Fish Audio Drama 3 checkpoint.
+    ///
+    /// The community marks these repositories with `fish_omni` or with a
+    /// name that carries the model, and the official ones with `sglang`.
+    pub fn is_drama3(&self) -> bool {
+        let id = self.id.to_lowercase();
+        self.tags.iter().any(|tag| {
+            tag == "fish_omni"
+                || tag == "fish-audio"
+                || tag == "fishaudio"
+                || tag == "drama3"
+                || tag.starts_with("drama3-")
+                || tag == "sglang-omni"
+        }) || id.contains("drama-3")
+            || id.contains("drama3")
+    }
+
     /// `true` when the runtime of the application can serve the model.
     ///
     /// The language runtime serves every GGUF checkpoint. The speech
@@ -446,6 +478,7 @@ impl HubModel {
         match self.family() {
             Some(ModelFamily::Llm) => !self.gguf_files().is_empty(),
             Some(ModelFamily::Qwen3Tts) => self.is_qwen3_tts() && self.format() != "gguf",
+            Some(ModelFamily::FishDrama3) => self.is_drama3() && self.format() != "gguf",
             _ => false,
         }
     }
@@ -650,6 +683,10 @@ impl HubModel {
             estimated_memory_bytes: size_bytes + size_bytes / 4,
             features: match family {
                 ModelFamily::Llm => Vec::new(),
+                ModelFamily::FishDrama3 => vec![
+                    TtsFeature::TextToSpeech,
+                    TtsFeature::VoiceCloning,
+                ],
                 _ => vec![TtsFeature::TextToSpeech],
             },
             llm_features: match family {
@@ -773,6 +810,56 @@ mod tests {
         };
         assert!(!model.is_runnable());
         assert_eq!(model.family().map(|family| family.as_str()), Some("qwen3-tts"));
+    }
+
+    /// The Drama 3 checkpoints are speech models of the second family.
+    /// The runtime serves them like the Qwen3-TTS ones, so they must not
+    /// be dropped from the search.
+    #[test]
+    fn a_drama_checkpoint_is_a_speech_model() {
+        let model = HubModel {
+            id: "fishaudio/drama-3-int4".to_string(),
+            pipeline_tag: Some("text-to-speech".to_string()),
+            library_name: None,
+            downloads: 100,
+            likes: 1,
+            last_modified: None,
+            created_at: None,
+            tags: vec![
+                "safetensors".to_string(),
+                "fish_omni".to_string(),
+                "text-to-speech".to_string(),
+                "sglang-omni".to_string(),
+            ],
+            siblings: Vec::new(),
+            size_bytes: None,
+            parameters: None,
+        };
+        assert!(model.is_runnable());
+        assert_eq!(model.family().map(|family| family.as_str()), Some("fish-drama-3"));
+        assert_eq!(model.engine_id(), "sglang-omni");
+        assert_eq!(model.format(), "safetensors");
+    }
+
+    /// The community conversion of Drama 3 for the Apple hardware is
+    /// read by the native runtime, not by the one of the other platforms.
+    #[test]
+    fn a_drama_checkpoint_of_apple_hardware_is_native() {
+        let model = HubModel {
+            id: "mlx-community/fish-audio-drama-3-4bit".to_string(),
+            pipeline_tag: Some("text-to-speech".to_string()),
+            library_name: None,
+            downloads: 100,
+            likes: 1,
+            last_modified: None,
+            created_at: None,
+            tags: vec!["mlx".to_string(), "text-to-speech".to_string()],
+            siblings: Vec::new(),
+            size_bytes: None,
+            parameters: None,
+        };
+        assert!(model.is_runnable());
+        assert_eq!(model.engine_id(), "sglang-omni-mlx");
     }
 
     /// A multimodal model is marked as `image-text-to-text` by the hub, and
