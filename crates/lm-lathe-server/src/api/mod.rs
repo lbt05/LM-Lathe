@@ -1187,19 +1187,31 @@ async fn uninstall_model(
         ))));
     }
     // A checkpoint that is in use must not disappear under the running
-    // engine.
-    if state
-        .service
-        .manager
-        .status()
-        .runtimes
-        .iter()
-        .any(|runtime| runtime.model_id == spec.id && runtime.state == RuntimeState::Running)
-    {
-        return Err(ApiError(TtsError::InvalidRequest(format!(
-            "`{}` 正在运行，请先卸载后再删除",
-            spec.id
-        ))));
+    // engine. The engine is stopped first, because the user asked for the
+    // model to go.
+    if is_language_model(&state, &spec.id) {
+        let running = state
+            .service
+            .llm
+            .runtimes()
+            .iter()
+            .any(|runtime| runtime.model_id == spec.id && runtime.state == RuntimeState::Running);
+        if running {
+            tracing::info!(model = %spec.id, "the engine is stopped before the checkpoint is removed");
+            state.service.llm.unload_model(&spec.id).await?;
+        }
+    } else {
+        let running = state
+            .service
+            .manager
+            .status()
+            .runtimes
+            .iter()
+            .any(|runtime| runtime.model_id == spec.id && runtime.state == RuntimeState::Running);
+        if running {
+            tracing::info!(model = %spec.id, "the engine is stopped before the checkpoint is removed");
+            state.service.manager.unload_model(&spec.id).await?;
+        }
     }
     state.service.installer.uninstall(&spec)?;
     Ok(StatusCode::NO_CONTENT.into_response())

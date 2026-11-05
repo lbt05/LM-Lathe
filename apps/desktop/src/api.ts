@@ -291,6 +291,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const body = await response.json();
       kind = body.kind ?? kind;
       message = body.message ?? message;
+      // Die Art des Fehlers steht schon im Text, er steht nur hindersaft.
+      message = message.replace(/^invalid request:\s*/, "");
     } catch {
       // the body was not JSON
     }
