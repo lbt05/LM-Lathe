@@ -1,17 +1,17 @@
 [package]
-name = "tts-server"
+name = "lm-lathe-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "HTTP API and command line interface of the local TTS subsystem."
+description = "The local gateway of LM-Lathe: HTTP API and command line interface."
 
 [lib]
-name = "tts_server"
+name = "lm_lathe_server"
 path = "src/lib.rs"
 
 [[bin]]
-name = "tts-server"
+name = "lm-lathe-server"
 path = "src/main.rs"
 
 [dependencies]

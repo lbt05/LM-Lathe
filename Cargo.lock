@@ -1033,6 +1033,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
+name = "lm-lathe-server"
+version = "0.1.0"
+dependencies = [
+ "ai-scheduler",
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "http-body-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "tts-core",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1969,27 +1990,6 @@ dependencies = [
  "tts-core",
  "uuid",
  "zip",
-]
-
-[[package]]
-name = "tts-server"
-version = "0.1.0"
-dependencies = [
- "ai-scheduler",
- "anyhow",
- "axum",
- "chrono",
- "clap",
- "http-body-util",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "tts-core",
 ]
 
 [[package]]

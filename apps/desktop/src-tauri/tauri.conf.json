@@ -36,7 +36,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/tts-server"],
+    "externalBin": ["binaries/lm-lathe-server"],
     "resources": [],
     "copyright": "",
     "category": "DeveloperTool",

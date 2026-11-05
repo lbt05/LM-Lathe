@@ -15,9 +15,9 @@ use tts_core::voice::{NewVoiceProfile, VoiceFilter};
 /// Command line interface of the TTS subsystem.
 #[derive(Debug, Parser)]
 #[command(
-    name = "tts-server",
+    name = "lm-lathe-server",
     version,
-    about = "Local TTS subsystem: model runtime, voice library and HTTP API"
+    about = "LM-Lathe: the local gateway for speech and language models"
 )]
 pub struct Cli {
     /// Directory that holds models, voices, audio and logs.

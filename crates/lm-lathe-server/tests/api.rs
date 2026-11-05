@@ -54,7 +54,7 @@ fn router(dir: &TempDir) -> axum::Router {
     service
         .registry
         .insert(tts_core::registry::TTSModelSpec::mock_spec());
-    tts_server::api::router(service, "127.0.0.1")
+    lm_lathe_server::api::router(service, "127.0.0.1")
 }
 
 async fn get(router: axum::Router, uri: &str) -> (StatusCode, axum::body::Body) {

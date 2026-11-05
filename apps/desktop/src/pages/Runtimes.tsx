@@ -303,7 +303,7 @@ export default function Runtimes() {
         ) : (
           <Empty
             title={store.base ? "没有已知的运行时" : "尚未连接本地服务"}
-            text="运行时由本地的 tts-server 提供，连接之后才会出现。"
+            text="运行时由本地的 lm-lathe-server 提供，连接之后才会出现。"
           />
         )}
       </section>

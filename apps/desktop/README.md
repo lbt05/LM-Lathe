@@ -17,7 +17,7 @@ npm run tauri:dev      # 开发模式（Vite + Tauri 窗口）
 npm run tauri:build    # 打包成 LM-Lathe.app
 ```
 
-两个命令都会先跑 `npm run sidecar`：把工作区里的 `tts-server` 复制到 `src-tauri/binaries/`，按 Tauri 的命名规则。**改了后端代码要重新跑一次**，否则应用还在用旧的二进制。
+两个命令都会先跑 `npm run sidecar`：先把后端编译一遍（没改动时 1 秒），再把 `lm-lathe-server` 复制到 `src-tauri/binaries/`，按 Tauri 的命名规则。所以改了后端代码，直接跑这两个命令就行。
 
 ```bash
 npm run build          # 只构建前端（tsc --noEmit + vite build）
@@ -48,10 +48,10 @@ src-tauri/
 
 ## 后端进程
 
-窗口打开时，Rust 侧通过 `start_server` 命令启动 `tts-server`：
+窗口打开时，Rust 侧通过 `start_server` 命令启动 `lm-lathe-server`：
 
 1. 在 `54321`（`LMLATHE_PORT` 可改）上找端口；已经被**同一份构建**占着就复用它，
-2. 否则以后台进程启动 `tts-server serve --host <绑定地址> --port <端口>`，
+2. 否则以后台进程启动 `lm-lathe-server serve --host <绑定地址> --port <端口>`，
 3. 等端口开始接受连接，把 Base URL 返回给前端。
 
 后端通过标准输入管道跟随宿主进程的生命周期：窗口关闭、宿主退出或进程收到 `SIGTERM` 时，管道关闭，后端随之退出，不会留下孤儿进程。
@@ -59,8 +59,8 @@ src-tauri/
 二进制按以下顺序查找：
 
 1. 环境变量 `TTS_SERVER_BIN`，
-2. 工作区的 `target/release/tts-server` 或 `target/debug/tts-server`（按修改时间取最新的），
-3. 打包进 `.app` 的 sidecar。
+2. 打包进 `.app` 的 sidecar（已安装的应用优先用它自己带的那一份），
+3. 工作区的 `target/release/lm-lathe-server` 或 `target/debug/lm-lathe-server`（按修改时间取最新的）。
 
 后端的输出写入 `~/.local-ai-manager/logs/tts/desktop-server.log`；数据目录可以用 `LOCAL_AI_MANAGER_HOME` 改变。
 

@@ -28,16 +28,16 @@
 cargo build --release
 
 # 2. 看看这台机器能跑什么
-./target/release/tts-server doctor
+./target/release/lm-lathe-server doctor
 
 # 3. 下载一个模型（会先做兼容性检查）
-./target/release/tts-server models install qwen3-tts-1.7b-voicedesign
+./target/release/lm-lathe-server models install qwen3-tts-1.7b-voicedesign
 
 # 4. 说一句话
-./target/release/tts-server speak --model qwen3-tts-1.7b-voicedesign --text "你好，世界" --out hello.wav
+./target/release/lm-lathe-server speak --model qwen3-tts-1.7b-voicedesign --text "你好，世界" --out hello.wav
 
 # 5. 起服务
-./target/release/tts-server serve --port 54321
+./target/release/lm-lathe-server serve --port 54321
 ```
 
 用桌面端就三步：
@@ -66,7 +66,7 @@ npm run tauri:dev
 ### 后端
 
 ```bash
-cargo build --release          # 产出 ./target/release/tts-server
+cargo build --release          # 产出 ./target/release/lm-lathe-server
 cargo test --workspace         # 76 个测试
 cargo clippy --all-targets
 ```
@@ -81,9 +81,17 @@ npm run tauri:dev              # 开发模式（前端热更新）
 npm run tauri:build            # 打包 .app
 ```
 
-`tauri:dev` 和 `tauri:build` 会先跑 `npm run sidecar`：把最新的 `tts-server` 复制成 sidecar 二进制。**改了后端代码，务必重新跑一次**，否则应用还在用旧的二进制。
+`tauri:dev` 和 `tauri:build` 会先跑 `npm run sidecar`：先把后端编译一遍（没改动时 1 秒），再复制成 sidecar 二进制。所以**改完后端直接跑这两个命令就行**，不会带着旧后端启动。
 
-打包产物在 `apps/desktop/src-tauri/target/release/bundle/macos/LM-Lathe.app`。
+打包产物在 `apps/desktop/src-tauri/target/release/bundle/macos/LM-Lathe.app`，**前后端都在里面**：
+
+```
+LM-Lathe.app/Contents/MacOS/
+├── lm-lathe          8.7 MB   窗口程序，前端（dist/）已经嵌进去
+└── lm-lathe-server   8.2 MB   后端，作为 sidecar 一起打包
+```
+
+把这个 `.app` 拷到别的 Mac 上就能跑——不需要 Rust，也不需要 Node。只有模型权重需要另外下载。
 
 ---
 
@@ -103,15 +111,15 @@ npm run tauri:build            # 打包 .app
 ### 命令行
 
 ```bash
-tts-server doctor                                   # 硬件与每个模型的兼容性
-tts-server models list|show|load|unload|pin|unpin|logs|install|uninstall
-tts-server engines list|versions|install|use|uninstall
-tts-server voices design|clone|remove
-tts-server speak --model qwen3-tts-1.7b-voicedesign --text "你好" --out hi.wav
-tts-server chat --model qwen3-4b-gguf --prompt "用一句话解释光合作用"
-tts-server play hi.wav
-tts-server status
-tts-server serve --host 127.0.0.1 --port 54321
+lm-lathe-server doctor                                   # 硬件与每个模型的兼容性
+lm-lathe-server models list|show|load|unload|pin|unpin|logs|install|uninstall
+lm-lathe-server engines list|versions|install|use|uninstall
+lm-lathe-server voices design|clone|remove
+lm-lathe-server speak --model qwen3-tts-1.7b-voicedesign --text "你好" --out hi.wav
+lm-lathe-server chat --model qwen3-4b-gguf --prompt "用一句话解释光合作用"
+lm-lathe-server play hi.wav
+lm-lathe-server status
+lm-lathe-server serve --host 127.0.0.1 --port 54321
 ```
 
 ### HTTP 接口
@@ -227,7 +235,7 @@ cargo test --workspace    # 76 个测试，14 个 target
 
 - [ ] 应用图标还是旧的波形图标，换成 LM-Lathe 的标志
 - [ ] 声音库没有界面：声音设计与克隆只能在 API 与 CLI 里用
-- [ ] 语言模型没有聊天界面：只能通过 `/v1/chat/completions` 或 `tts-server chat`
+- [ ] 语言模型没有聊天界面：只能通过 `/v1/chat/completions` 或 `lm-lathe-server chat`
 - [ ] `.app` 没有签名与公证，换机器安装时 Gatekeeper 会拦
 
 ### 模型与运行时

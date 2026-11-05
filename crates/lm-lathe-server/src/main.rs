@@ -2,7 +2,7 @@
 //! interface.
 
 use clap::Parser;
-use tts_server::cli;
+use lm_lathe_server::cli;
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()

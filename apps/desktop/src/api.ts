@@ -1,7 +1,7 @@
 /**
  * Typed client for the TTS HTTP API.
  *
- * The desktop application starts the `tts-server` sidecar and receives its
+ * The desktop application starts the `lm-lathe-server` sidecar and receives its
  * base URL from the Rust side; every request then goes straight to that
  * local server.
  */

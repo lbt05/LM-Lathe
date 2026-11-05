@@ -1,7 +1,7 @@
 /**
  * Application store.
  *
- * Owns the connection to the local `tts-server`, the shared model/runtime
+ * Owns the connection to the local `lm-lathe-server`, the shared model/runtime
  * state, the inspector selection, the activity log and the toast queue.
  */
 

@@ -1,4 +1,4 @@
-//! Management of the `tts-server` backend.
+//! Management of the `lm-lathe-server` backend.
 //!
 //! The desktop application owns the lifecycle of the backend: it starts the
 //! server on a free port when the window opens and stops it when the
@@ -28,7 +28,7 @@ pub struct ServerState {
 }
 
 /// The name of the backend binary.
-const BINARY: &str = "tts-server";
+const BINARY: &str = "lm-lathe-server";
 
 /// Finds the backend binary.
 ///
@@ -67,34 +67,42 @@ fn server_binary(app: &AppHandle) -> Result<PathBuf, String> {
     });
     development.reverse();
     development.retain(|candidate| candidate.exists());
-    let mut candidates: Vec<PathBuf> = development;
-
     // Packaged application: the sidecar that Tauri bundled. Depending on the
     // platform it sits next to the executable or inside the resource
     // directory, with or without the target triple in its name.
+    let mut packaged: Vec<PathBuf> = Vec::new();
     let triple = format!("{}-{}", std::env::consts::ARCH, platform_triple());
     if let Ok(directory) = app.path().resource_dir() {
-        candidates.push(
+        packaged.push(
             directory
                 .join("binaries")
                 .join(format!("{BINARY}-{triple}")),
         );
-        candidates.push(directory.join("binaries").join(BINARY));
-        candidates.push(directory.join(format!("{BINARY}-{triple}")));
-        candidates.push(directory.join(BINARY));
+        packaged.push(directory.join("binaries").join(BINARY));
+        packaged.push(directory.join(format!("{BINARY}-{triple}")));
+        packaged.push(directory.join(BINARY));
         if let Some(parent) = directory.parent() {
-            candidates.push(parent.join("MacOS").join(BINARY));
+            packaged.push(parent.join("MacOS").join(BINARY));
         }
     }
     if let Ok(executable) = std::env::current_exe() {
         if let Some(directory) = executable.parent() {
-            candidates.push(directory.join(BINARY));
-            candidates.push(directory.join(format!("{BINARY}-{triple}")));
+            packaged.push(directory.join(BINARY));
+            packaged.push(directory.join(format!("{BINARY}-{triple}")));
         }
     }
 
-    // The newest copy wins: the backend workspace and the desktop directory
-    // can both hold a build, and only one of them is current.
+    // An installed application uses the backend it carries; a development
+    // build uses the newest one of the workspace.
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if packaged.iter().any(|candidate| candidate.exists()) {
+        candidates.extend(packaged);
+        candidates.extend(development);
+    } else {
+        candidates.extend(development);
+        candidates.extend(packaged);
+    }
+
     for candidate in candidates {
         if candidate.exists() {
             return Ok(candidate);

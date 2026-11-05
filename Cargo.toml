@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "crates/ai-scheduler",
     "crates/tts-core",
-    "crates/tts-server",
+    "crates/lm-lathe-server",
 ]
 
 [workspace.package]

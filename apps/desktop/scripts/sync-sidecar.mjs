@@ -1,5 +1,5 @@
 /**
- * Copies the `tts-server` binary into the directory Tauri expects for
+ * Copies the `lm-lathe-server` binary into the directory Tauri expects for
  * sidecars. Tauri names the file after the target triple.
  */
 import { execFileSync } from "node:child_process";
@@ -20,21 +20,25 @@ const platform = {
 const triple = process.env.TAURI_ENV_TARGET_TRIPLE ?? `${arch}-${platform}`;
 
 const candidates = [
-  join(repoRoot, "target", "release", "tts-server"),
-  join(repoRoot, "target", "debug", "tts-server"),
+  join(repoRoot, "target", "release", "lm-lathe-server"),
+  join(repoRoot, "target", "debug", "lm-lathe-server"),
 ];
+
+// The backend is always built first: an incremental build takes a second when
+// nothing changed and prevents the application from starting a stale copy.
+console.log("[sidecar] building lm-lathe-server …");
+execFileSync("cargo", ["build", "--release", "-p", "lm-lathe-server"], {
+  cwd: repoRoot,
+  stdio: "inherit",
+});
 
 let source = candidates.find((path) => existsSync(path));
 if (!source) {
-  console.log("[sidecar] building tts-server …");
-  execFileSync("cargo", ["build", "--release", "-p", "tts-server"], {
-    cwd: repoRoot,
-    stdio: "inherit",
-  });
-  source = candidates[0];
+  console.error("[sidecar] the backend was not built");
+  process.exit(1);
 }
 
 mkdirSync(binaries, { recursive: true });
-const destination = join(binaries, `tts-server-${triple}`);
+const destination = join(binaries, `lm-lathe-server-${triple}`);
 copyFileSync(source, destination);
 console.log(`[sidecar] ${source} -> ${destination}`);

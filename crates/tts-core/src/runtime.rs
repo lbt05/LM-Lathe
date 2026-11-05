@@ -378,7 +378,7 @@ impl Inner {
             let path = self.registry.install_path(&spec.id).unwrap_or_default();
             if !path.is_dir() {
                 return Err(TtsError::Engine(format!(
-                    "model `{}` is not installed at {} — run `tts-server models install {}` first",
+                    "model `{}` is not installed at {} — run `lm-lathe-server models install {}` first",
                     spec.id,
                     path.display(),
                     spec.id

@@ -741,7 +741,7 @@ export default function Models({
               text={
                 store.base
                   ? "换个筛选条件，或切到「发现模型」下载一个。"
-                  : "已下载的模型清单来自本地的 tts-server。"
+                  : "已下载的模型清单来自本地的 lm-lathe-server。"
               }
               action={
                 store.base ? (
