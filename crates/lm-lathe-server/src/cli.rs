@@ -144,6 +144,9 @@ pub enum ModelCommand {
     Uninstall {
         /// Model id or alias.
         id: String,
+        /// Confirms that the checkpoint may be removed.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -498,7 +501,7 @@ async fn models(service: std::sync::Arc<TtsService>, command: ModelCommand) -> R
             Ok(())
         }
         ModelCommand::Install { id } => install(service.clone(), &id).await,
-        ModelCommand::Uninstall { id } => uninstall(service.clone(), &id),
+        ModelCommand::Uninstall { id, yes } => uninstall(service.clone(), &id, yes),
         ModelCommand::Logs { id } => {
             let logs = service.manager.logs(&id).await?;
             print!("{logs}");
@@ -552,11 +555,19 @@ async fn install(service: std::sync::Arc<TtsService>, id: &str) -> Result<()> {
 }
 
 /// Removes the checkpoint of a model from the disk.
-fn uninstall(service: std::sync::Arc<TtsService>, id: &str) -> Result<()> {
+fn uninstall(service: std::sync::Arc<TtsService>, id: &str, yes: bool) -> Result<()> {
     let spec = service
         .registry
         .resolve(id)
         .with_context(|| format!("unknown model `{id}`"))?;
+    if !yes {
+        // The checkpoint is gigabytes of weights; the command asks before it
+        // removes them.
+        anyhow::bail!(
+            "`{}` löscht die Gewichte von `{id}` auf der Platte. Bestätige mit --yes.",
+            spec.id
+        );
+    }
     service.installer.uninstall(&spec)?;
     println!("removed the checkpoint of {}", spec.id);
     Ok(())

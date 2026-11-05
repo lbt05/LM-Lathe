@@ -240,10 +240,11 @@ cargo test --workspace    # 76 个测试，14 个 target
 
 ### 模型与运行时
 
-- [ ] Qwen3-TTS 1.7B 在 Apple Silicon 上一加载就崩（Torch MPS 的 SIGSEGV，上游 bug）；0.6B 的 MLX 转换版可用
-- [ ] Drama 3 的所有变体都超过 34 GB 机器的内存；需要更小的量化或更大的机器
+- [x] Qwen3-TTS 1.7B 在 Apple Silicon 上会崩（Torch MPS 的 SIGSEGV，上游 bug）：模型旁边有警告，指向 0.6B 的 MLX 转换版
+- [x] Drama 3 的所有变体都超过 34 GB 机器的内存：模型旁边有警告，指明缺多少内存
 - [ ] MLX 变体的参数量还是 `—`（Hugging Face 上没有 safetensors 元数据）
 - [ ] 命令行安装模型与引擎时没有周期进度输出，只有桌面端有
+- [ ] 旧的窗口还在运行时，它用的是旧的界面代码：删除模型现在必须带 `{"confirm": true}`，命令行要加 `--yes`
 - [ ] 引擎健康检查对没有绑定模型的引擎只回答 `no-model`
 
 ### 功能缺口（`todo.md` 的 P1）

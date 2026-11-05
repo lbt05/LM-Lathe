@@ -22,6 +22,8 @@ export interface Model {
   compatible: boolean;
   compatibility: string;
   notes: string[];
+  /** Things that are known to go wrong with this model on this machine. */
+  warnings?: string[];
   installed: boolean;
   path: string | null;
   state: string;
@@ -139,6 +141,8 @@ export interface DiscoveredModel {
   size_bytes?: number | null;
   /** The number of parameters of the model. */
   parameters?: number | null;
+  /** Things that are known to go wrong with this model on this machine. */
+  warnings?: string[];
 }
 
 /** The answer of a search of the hub. */
@@ -355,7 +359,10 @@ export const api = {
   installModel: (id: string) =>
     request<void>(`/v1/tts/models/${id}/install`, { method: "POST" }),
   uninstallModel: (id: string) =>
-    request<void>(`/v1/tts/models/${id}/uninstall`, { method: "POST" }),
+    request<void>(`/v1/tts/models/${id}/uninstall`, {
+      method: "POST",
+      body: JSON.stringify({ confirm: true }),
+    }),
   installProgress: (id: string) =>
     request<InstallProgress>(`/v1/tts/models/${id}/install`),
   modelLogs: async (id: string) => {

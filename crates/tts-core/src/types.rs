@@ -22,6 +22,20 @@ pub enum ModelFamily {
 }
 
 impl ModelFamily {
+    /// The memory a checkpoint of this family needs, when it is known.
+    ///
+    /// The value is the same as the one of the built-in checkpoints, so that
+    /// a model of the hub is judged by the same rule.
+    pub fn memory_requirement(&self) -> u64 {
+        match self {
+            ModelFamily::Qwen3Tts => 16 * 1024 * 1024 * 1024,
+            ModelFamily::FishDrama3 => 48 * 1024 * 1024 * 1024,
+            ModelFamily::Llm => 0,
+            #[cfg(feature = "mock-engine")]
+            ModelFamily::Mock => 0,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             ModelFamily::Qwen3Tts => "qwen3-tts",

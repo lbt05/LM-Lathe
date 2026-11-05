@@ -268,6 +268,10 @@ pub struct ModelDto {
     pub compatibility: String,
     /// Compatibility notes.
     pub notes: Vec<String>,
+    /// Warnings for the reader of the interface: things that are known to go
+    /// wrong before they happen.
+    #[serde(default)]
+    pub warnings: Vec<String>,
     /// `true` when the checkpoint is present on disk.
     pub installed: bool,
     /// Where the checkpoint is stored.
@@ -311,6 +315,9 @@ pub struct DiscoveredModelDto {
     pub size_bytes: Option<u64>,
     /// The number of parameters of the model.
     pub parameters: Option<u64>,
+    /// Warnings for the reader of the interface.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// The answer of a search of the hub.

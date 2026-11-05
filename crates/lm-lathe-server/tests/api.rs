@@ -253,7 +253,7 @@ async fn a_model_can_be_loaded_and_pinned() {
 }
 
 #[tokio::test]
-async fn a_builtin_model_cannot_be_deleted() {
+async fn a_checkpoint_is_only_removed_with_a_confirmation() {
     let dir = TempDir::new("api");
     let router = router(&dir);
 
@@ -261,6 +261,29 @@ async fn a_builtin_model_cannot_be_deleted() {
         router.clone(),
         "/v1/tts/models/mock-echo/uninstall",
         serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("确认"),
+        "the message does not ask for the confirmation: {json}"
+    );
+}
+
+#[tokio::test]
+async fn a_builtin_model_cannot_be_deleted() {
+    let dir = TempDir::new("api");
+    let router = router(&dir);
+
+    let (status, body) = post_json(
+        router.clone(),
+        "/v1/tts/models/mock-echo/uninstall",
+        serde_json::json!({ "confirm": true }),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);

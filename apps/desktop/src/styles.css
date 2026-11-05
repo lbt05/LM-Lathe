@@ -247,6 +247,13 @@ a{color:var(--ink);text-decoration:underline;text-underline-offset:2px;text-deco
   justify-self:start;align-self:center;
 }
 .tag__dot{width:5px;height:5px;border-radius:1px;background:currentColor;flex:none}
+.warnmark{
+  display:inline-flex;align-items:center;justify-content:center;flex:none;
+  width:17px;height:17px;border-radius:50%;
+  background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn);
+  cursor:help;
+}
+.warnmark .od-icon{--od-icon-size:11px}
 .tag--ok{background:color-mix(in srgb,var(--ok) 13%,transparent);color:var(--ok)}
 .tag--warn{background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)}
 .tag--bad{background:color-mix(in srgb,var(--bad) 13%,transparent);color:var(--bad)}

@@ -695,7 +695,10 @@ impl HubModel {
                 _ => Vec::new(),
             },
             files: wanted,
-            hardware: Default::default(),
+            hardware: crate::registry::HardwareRequirement {
+                min_total_ram_bytes: family.memory_requirement(),
+                ..Default::default()
+            },
             mode: match family {
                 ModelFamily::Llm => EngineMode::LlamaCpp,
                 _ => {

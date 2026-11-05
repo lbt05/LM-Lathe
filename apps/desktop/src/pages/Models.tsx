@@ -69,6 +69,18 @@ function formatOf(model: Model): string {
   return model.format ? model.format.toUpperCase() : "—";
 }
 
+/**
+ * A warning mark that tells when it is read: the reason is in the tooltip.
+ */
+function WarnMark({ warnings }: { warnings?: string[] }) {
+  if (!warnings || !warnings.length) return null;
+  return (
+    <span className="warnmark" title={warnings.join("\n")}>
+      <Icon name="alert" size={13} />
+    </span>
+  );
+}
+
 /** The number of the parameters, e.g. `1.7B`. */
 function parametersOf(model: Model): string {
   if (!model.parameters) return "—";
@@ -513,6 +525,7 @@ export default function Models({
                             <span className="cellrow">
                               <TypeMark type={model.family === "llm" ? "LLM" : "TTS"} />
                               <span className="name">{model.name}</span>
+                              <WarnMark warnings={model.warnings} />
                             </span>
                             <span className="sub">
                               {model.quant
@@ -651,6 +664,7 @@ export default function Models({
                             <span className="cellrow">
                               <TypeMark type={purposeOf(model)} />
                               <span className="name">{model.name}</span>
+                              <WarnMark warnings={model.warnings} />
                               {model.pinned ? (
                                 <Icon name="shield" />
                               ) : null}
@@ -984,6 +998,11 @@ export function ModelInspector({ id, tab }: { id: string; tab: string }) {
         {model.notes.length ? (
           <Note title="说明">
             <p>{model.notes.join("\n")}</p>
+          </Note>
+        ) : null}
+        {model.warnings?.length ? (
+          <Note title="注意">
+            <p>{model.warnings.join("\n")}</p>
           </Note>
         ) : null}
       </>

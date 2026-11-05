@@ -402,6 +402,52 @@ async fn list_catalogue(State(state): State<ApiState>) -> Result<impl IntoRespon
 /// Searches the Hugging Face Hub for models the runtime can serve. The
 /// registry only knows the models that ship with the application, so this
 /// is where the rest of the hub comes from.
+/// The warnings of a model of the hub.
+///
+/// The model is described by the files of its repository, so the same rules
+/// as for the built-in catalogue apply.
+fn discovered_warnings(
+    model: &tts_core::hub::HubModel,
+    hardware: &tts_core::hardware::HardwareProfile,
+) -> Vec<String> {
+    let family = match model.family() {
+        Some(family) => family,
+        None => return Vec::new(),
+    };
+    let engine_id = model.engine_id();
+    let mut warnings = Vec::new();
+
+    let needed = family.memory_requirement().max(
+        model
+            .size_bytes
+            .map(|size| size + size / 4)
+            .unwrap_or_default(),
+    );
+    if needed > 0 && hardware.total_ram_bytes < needed {
+        warnings.push(format!(
+            "这个检查点需要约 {:.1} GiB 内存，这台机器只有 {:.1} GiB。换一个更小的量化版本，或者换一台机器。",
+            needed as f64 / 1024.0 / 1024.0 / 1024.0,
+            hardware.total_ram_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+        ));
+    }
+
+    if hardware.apple_silicon
+        && engine_id == "sglang-omni"
+        && family == ModelFamily::Qwen3Tts
+        && model.parameters.unwrap_or_default() > 1_000_000_000
+    {
+        warnings.push(
+            "在 Apple Silicon 上，Torch MPS 加载这个检查点时会崩溃（torch 的已知问题）。"
+                .to_string(),
+        );
+        warnings.push(
+            "可以改用 0.6B 的 MLX 转换版（qwen3-tts-0.6b-customvoice-mlx）。".to_string(),
+        );
+    }
+
+    warnings
+}
+
 async fn discover_models(
     State(state): State<ApiState>,
     Query(params): Query<DiscoverParams>,
@@ -441,6 +487,7 @@ async fn discover_models(
                     .unwrap_or(false),
                 size_bytes: model.size_bytes,
                 parameters: model.parameters,
+                warnings: discovered_warnings(model, &state.service.hardware),
             }
         })
         .collect();
@@ -538,6 +585,54 @@ fn is_servable(state: &ApiState, spec: &TTSModelSpec) -> bool {
 }
 
 /// Maps a model to its payload.
+/// The warnings of a model for the reader of the interface.
+///
+/// They name the things that are known to fail before they happen: a
+/// checkpoint that does not fit into the memory of the machine, or an
+/// engine that crashes on this platform.
+fn warnings_for(
+    spec: &TTSModelSpec,
+    hardware: &tts_core::hardware::HardwareProfile,
+    report: &tts_core::registry::CompatibilityReport,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    // The checkpoint does not fit into the memory of this machine.
+    let needed = if spec.hardware.min_total_ram_bytes > 0 {
+        spec.hardware.min_total_ram_bytes
+    } else {
+        spec.estimated_memory_bytes
+    };
+    if needed > 0 && hardware.total_ram_bytes < needed {
+        warnings.push(format!(
+            "这个检查点需要约 {:.1} GiB 内存，这台机器只有 {:.1} GiB。换一个更小的量化版本，或者换一台机器。",
+            needed as f64 / 1024.0 / 1024.0 / 1024.0,
+            hardware.total_ram_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+        ));
+    } else if !report.compatible {
+        // Something else is missing: the note of the report explains it.
+        warnings.push(format!(
+            "这台机器不能运行这个模型：{}。",
+            report.notes.join("；")
+        ));
+    }
+
+    // The Torch path of SGLang-Omni crashes on Apple Silicon while it loads
+    // the bigger Qwen3-TTS checkpoints.
+    if hardware.apple_silicon
+        && spec.engine_id == "sglang-omni"
+        && spec.family == ModelFamily::Qwen3Tts
+        && spec.parameters.unwrap_or_default() > 1_000_000_000
+    {
+        warnings.push(
+            "在 Apple Silicon 上，Torch MPS 加载这个检查点时会崩溃（torch 的已知问题）。             可以改用 0.6B 的 MLX 转换版（qwen3-tts-0.6b-customvoice-mlx）。"
+                .to_string(),
+        );
+    }
+
+    warnings
+}
+
 fn model_dto(
     state: &ApiState,
     spec: &TTSModelSpec,
@@ -575,7 +670,8 @@ fn model_dto(
             .collect(),
         compatible: report.compatible,
         compatibility: report.level.as_str().to_string(),
-        notes: report.notes,
+        notes: report.notes.clone(),
+        warnings: warnings_for(spec, &state.service.hardware, &report),
         installed: state.service.registry.is_installed(&spec.id),
         path: state.service.registry.install_path(&spec.id),
         state: runtime
@@ -1072,8 +1168,18 @@ async fn install_progress(
 async fn uninstall_model(
     State(state): State<ApiState>,
     Path(id): Path<String>,
+    body: Option<Json<UninstallRequest>>,
 ) -> Result<Response, ApiError> {
     let spec = resolve_model(&state.service, &id)?;
+    // Deleting a checkpoint removes gigabytes from the disk, so the caller
+    // has to say that it means it. A client that does not know this rule —
+    // an old window that is still open, for example — is refused.
+    let confirmed = body.map(|Json(body)| body.confirm).unwrap_or(false);
+    if !confirmed {
+        return Err(ApiError(TtsError::InvalidRequest(
+            "删除模型需要确认：请在请求里带上 {\"confirm\": true}".to_string(),
+        )));
+    }
     if spec.is_builtin() {
         return Err(ApiError(TtsError::InvalidRequest(format!(
             "`{}` 内置于应用，无法删除",
@@ -1097,6 +1203,14 @@ async fn uninstall_model(
     }
     state.service.installer.uninstall(&spec)?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The body of a request that removes a checkpoint.
+#[derive(Debug, Deserialize)]
+struct UninstallRequest {
+    /// The caller confirms that the checkpoint may be removed.
+    #[serde(default)]
+    confirm: bool,
 }
 
 /// `GET /v1/tts/models/{id}/logs`
