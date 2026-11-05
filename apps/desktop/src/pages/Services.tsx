@@ -18,12 +18,9 @@ import {
 /** The HTTP surface the local service exposes. */
 export default function Services() {
   const store = useStore();
-  // The language models run in their own runtime, both kinds of instances
-  // belong to the same list.
-  const runtimes = [
-    ...(store.status?.runtimes ?? []),
-    ...(store.status?.llm_runtimes ?? []),
-  ];
+  // The speech models and the language models run in different runtimes,
+  // both kinds of instances belong to the same list.
+  const runtimes = store.instances;
   const running = runtimes.filter((runtime) => runtime.state === "running");
   // The route count comes from the gateway itself, so it cannot drift away
   // from the routes that are really served. The paths themselves stay in the
@@ -210,9 +207,7 @@ export default function Services() {
 /** The right hand panel for one running instance. */
 export function ServiceInspector({ id, tab }: { id: string; tab: string }) {
   const store = useStore();
-  const runtime = (store.status?.runtimes ?? []).find(
-    (item) => item.model_id === id,
-  );
+  const runtime = store.runtimeOf(id);
   const model = store.models.find((item) => item.id === id);
   const [logs, setLogs] = useState<string | null>(null);
 

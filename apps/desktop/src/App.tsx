@@ -48,9 +48,9 @@ function Shell() {
     if (store.view !== "models") setQuery("");
   }, [store.view]);
 
-  const running =
-    store.status?.runtimes.filter((runtime) => runtime.state === "running")
-      .length ?? 0;
+  const running = store.instances.filter(
+    (runtime) => runtime.state === "running",
+  ).length;
 
   const groups = NAV.reduce<{ name: string; items: typeof NAV }[]>((acc, item) => {
     const last = acc[acc.length - 1];

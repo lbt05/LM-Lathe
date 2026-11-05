@@ -80,6 +80,8 @@ interface Store {
   engines: EngineAsset[];
   routes: Route[];
   refresh: () => Promise<void>;
+  /** Every running model, speech and language alike. */
+  instances: Runtime[];
   runtimeOf: (modelId: string) => Runtime | undefined;
 
   inspector: Inspector;
@@ -374,13 +376,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [theme]);
 
   // The speech models and the language models run in different runtimes,
-  // the interface only knows one list of instances.
+  // the interface only knows one list of instances. Every page reads this
+  // one list, so the rail, the runtime sheet and the service sheet can
+  // never disagree about what is running.
+  const instances = useMemo<Runtime[]>(
+    () => [...(status?.runtimes ?? []), ...(status?.llm_runtimes ?? [])],
+    [status],
+  );
+
   const runtimeOf = useCallback(
     (modelId: string) =>
-      [...(status?.runtimes ?? []), ...(status?.llm_runtimes ?? [])].find(
-        (runtime) => runtime.model_id === modelId,
-      ),
-    [status],
+      instances.find((runtime) => runtime.model_id === modelId),
+    [instances],
   );
 
   const value = useMemo<Store>(
@@ -398,6 +405,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       engines,
       routes,
       refresh,
+      instances,
       runtimeOf,
       inspector,
       setInspector,
@@ -423,6 +431,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       engines,
       routes,
       refresh,
+      instances,
       runtimeOf,
       inspector,
       events,

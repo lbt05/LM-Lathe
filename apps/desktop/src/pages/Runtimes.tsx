@@ -117,7 +117,7 @@ export default function Runtimes() {
 
   const hardware = store.status?.hardware;
   const scheduler = store.status?.scheduler;
-  const instances = store.status?.runtimes ?? [];
+  const instances = store.instances;
   const installedCount = store.engines.filter((engine) => engine.installed.length > 0).length;
 
   return (
@@ -331,7 +331,10 @@ export default function Runtimes() {
                 {instances.map((instance) => (
                   <tr key={instance.model_id}>
                     <td>
-                      <span className="name">{instance.model_id}</span>
+                      <span className="name">
+                        {store.models.find((model) => model.id === instance.model_id)?.name ??
+                          instance.model_id}
+                      </span>
                       {instance.pinned ? <span className="sub"> · 已固定</span> : null}
                     </td>
                     <td>
