@@ -52,6 +52,14 @@ pub struct HubModel {
     /// The files of the repository, when the hub was asked for them.
     #[serde(default)]
     pub siblings: Vec<HubSibling>,
+    /// The size of the files that would be downloaded, filled in when the
+    /// repository was looked at a second time.
+    #[serde(skip)]
+    pub size_bytes: Option<u64>,
+    /// The number of parameters of the model, filled in when the repository
+    /// was looked at a second time.
+    #[serde(skip)]
+    pub parameters: Option<u64>,
 }
 
 /// One file of a repository.
@@ -73,7 +81,7 @@ pub struct HubClient {
 /// The list starts at the size that runs everywhere and ends at the most
 /// expensive one, so a repository that offers several of them gets the
 /// middle of the road by default.
-const QUANT_PREFERENCE: [&str; 10] = [
+const QUANT_PREFERENCE: [&str; 12] = [
     "Q4_K_M",
     "Q5_K_M",
     "Q4_K_S",
@@ -81,10 +89,33 @@ const QUANT_PREFERENCE: [&str; 10] = [
     "Q8_0",
     "Q5_0",
     "Q4_0",
+    "IQ4_XS",
+    "IQ4_NL",
     "Q3_K_M",
     "Q3_K_L",
     "Q2_K",
 ];
+
+/// `true` when the file holds the weights without a quantisation.
+///
+/// Those files are the biggest ones of a repository, so they are the last
+/// choice when the download can pick a quantisation.
+fn is_unquantised(path: &str) -> bool {
+    let name = path.to_uppercase();
+    ["BF16", "F16", "F32", "FP16", "FP32"]
+        .iter()
+        .any(|marker| name.contains(marker))
+}
+
+/// The name of the file inside the repository.
+fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// The directory of the file inside the repository.
+fn directory_of(path: &str) -> &str {
+    path.rsplit_once('/').map(|(directory, _)| directory).unwrap_or("")
+}
 
 impl HubClient {
     /// Creates a client that talks to the public hub.
@@ -133,10 +164,43 @@ impl HubClient {
         let dropped = all.len();
         let mut models: Vec<HubModel> = all.into_iter().filter(HubModel::is_runnable).collect();
         models.truncate(limit);
+        let models = self.with_sizes(models).await;
         Ok(HubSearch {
             models,
             dropped,
         })
+    }
+
+    /// Asks the hub for the size of every model of a result.
+    ///
+    /// The hub does not answer the search with sizes, so every repository
+    /// is looked at once more. The lookups run together, so the answer
+    /// takes about as long as the slowest one.
+    async fn with_sizes(&self, models: Vec<HubModel>) -> Vec<HubModel> {
+        let mut lookups = tokio::task::JoinSet::new();
+        for model in models {
+            let client = self.clone();
+            let want_parameters = model.format() != "gguf";
+            lookups.spawn(async move {
+                let detail = client.detail(&model.id, want_parameters).await.ok();
+                (model, detail)
+            });
+        }
+        let mut sized = Vec::new();
+        while let Some(joined) = lookups.join_next().await {
+            if let Ok((mut model, detail)) = joined {
+                if let Some(detail) = detail {
+                    model.size_bytes = model.size_of(&detail);
+                    if model.format() == "gguf" {
+                        model.parameters = model.parameters_from_name();
+                    } else {
+                        model.parameters = detail.safetensors_parameters;
+                    }
+                }
+                sized.push(model);
+            }
+        }
+        sized
     }
 
     /// Asks the hub for the repositories of a search.
@@ -222,6 +286,68 @@ impl HubClient {
             .filter(|file| file.kind == "file")
             .collect())
     }
+
+    /// Asks the hub for the size of the files of a repository and for the
+    /// number of its parameters.
+    ///
+    /// The search of the hub does not answer with sizes, so every result
+    /// needs a second look before it can tell how large the download is.
+    pub async fn detail(&self, repo: &str, want_parameters: bool) -> TtsResult<HubDetail> {
+        let files = self.files(repo).await?;
+        let mut detail = HubDetail::default();
+        for file in &files {
+            let Some(size) = file.size else { continue };
+            if file.path.ends_with(".gguf") {
+                detail.gguf_files.push((file.path.clone(), size));
+            } else if file.path.ends_with(".safetensors") {
+                detail.safetensors_bytes += size;
+            }
+        }
+        if want_parameters {
+            detail.safetensors_parameters = self.parameters(repo).await?;
+        }
+        Ok(detail)
+    }
+
+    /// Asks the hub for the number of parameters of a repository.
+    ///
+    /// The hub answers with the parameters of the safetensors files, which
+    /// is the exact number of weights of the model.
+    async fn parameters(&self, repo: &str) -> TtsResult<Option<u64>> {
+        let url = format!(
+            "{}/api/models/{}?expand[]=safetensors",
+            self.endpoint, repo
+        );
+        let response = match self.client.get(&url).send().await {
+            Ok(response) => response,
+            // The parameters are a nicety; the search must not fail without
+            // them.
+            Err(_) => return Ok(None),
+        };
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        let body: serde_json::Value = match response.json().await {
+            Ok(body) => body,
+            Err(_) => return Ok(None),
+        };
+        Ok(body
+            .get("safetensors")
+            .and_then(|info| info.get("parameters"))
+            .and_then(|parameters| parameters.get("total"))
+            .and_then(|total| total.as_u64()))
+    }
+}
+
+/// The size of the files of a repository.
+#[derive(Debug, Clone, Default)]
+pub struct HubDetail {
+    /// The GGUF files of the repository with their size.
+    pub gguf_files: Vec<(String, u64)>,
+    /// The sum of the safetensors files of the repository.
+    pub safetensors_bytes: u64,
+    /// The number of parameters of the model, when the hub knows it.
+    pub safetensors_parameters: Option<u64>,
 }
 
 impl HubModel {
@@ -328,31 +454,47 @@ impl HubModel {
         if files.is_empty() {
             return Vec::new();
         }
-        // A split checkpoint keeps its parts next to each other and an
-        // index file describes them; the parts belong together.
-        if let Some(first) = files.iter().find(|path| {
-            path.rsplit('/')
-                .next()
-                .map(|name| name.contains("-of-"))
-                .unwrap_or(false)
-        }) {
-            let prefix = first
-                .rsplit('/')
-                .next()
-                .unwrap_or_default()
+        // The unquantised files are the biggest ones of a repository, so
+        // they are the last choice.
+        let quantised: Vec<&String> = files
+            .iter()
+            .filter(|path| !is_unquantised(path))
+            .collect();
+        let pool: Vec<&String> = if quantised.is_empty() {
+            files.iter().collect()
+        } else {
+            quantised
+        };
+        // A split checkpoint keeps its parts next to each other, in the
+        // directory of its quantisation. The parts of another quantisation
+        // must not be added to it.
+        if let Some(first) = pool
+            .iter()
+            .find(|path| file_name(path).contains("-of-"))
+        {
+            let directory = directory_of(first);
+            // The name of a part ends with the number of the part:
+            // `Model-Q4_K_M-00001-of-00002.gguf`. The prefix of the parts
+            // is the name without that number.
+            let before_of = file_name(first)
                 .split("-of-")
                 .next()
-                .unwrap_or_default()
-                .to_string();
-            let mut parts: Vec<String> = files
+                .unwrap_or_default();
+            let prefix = before_of
+                .rsplit_once('-')
+                .filter(|(_, number)| {
+                    !number.is_empty() && number.chars().all(|char| char.is_ascii_digit())
+                })
+                .map(|(head, _)| head.to_string())
+                .unwrap_or_else(|| before_of.to_string());
+            let mut parts: Vec<String> = pool
                 .iter()
                 .filter(|path| {
-                    path.rsplit('/')
-                        .next()
-                        .map(|name| name.starts_with(&prefix) && name.contains("-of-"))
-                        .unwrap_or(false)
+                    directory_of(path) == directory
+                        && file_name(path).starts_with(&prefix)
+                        && file_name(path).contains("-of-")
                 })
-                .cloned()
+                .map(|path| (*path).clone())
                 .collect();
             parts.sort();
             if !parts.is_empty() {
@@ -361,14 +503,14 @@ impl HubModel {
         }
         // A single file per quantisation: the preferred one wins.
         for wanted in QUANT_PREFERENCE {
-            if let Some(file) = files
+            if let Some(file) = pool
                 .iter()
-                .find(|path| path.to_uppercase().contains(wanted))
+                .find(|path| file_name(path).to_uppercase().contains(wanted))
             {
-                return vec![file.clone()];
+                return vec![(*file).clone()];
             }
         }
-        vec![files[0].clone()]
+        vec![pool[0].clone()]
     }
 
     /// The quantisation of the chosen checkpoint.
@@ -379,6 +521,74 @@ impl HubModel {
             if name.to_uppercase().contains(wanted) {
                 return Some(wanted.to_string());
             }
+        }
+        // A quantisation the application does not know: the name of the file
+        // ends with it.
+        let stem = name.strip_suffix(".gguf").unwrap_or(name);
+        let last = stem.rsplit('-').next()?;
+        if last.chars().any(|char| char.is_ascii_digit()) {
+            Some(last.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// The size of the download, in bytes.
+    ///
+    /// A GGUF repository is downloaded with one quantisation only, so the
+    /// size is the one of the chosen file. Every other repository is
+    /// downloaded completely.
+    pub fn size_of(&self, detail: &HubDetail) -> Option<u64> {
+        if self.format() == "gguf" {
+            let wanted = self.chosen_files();
+            let mut size = 0u64;
+            for path in &wanted {
+                let found = detail
+                    .gguf_files
+                    .iter()
+                    .find(|(name, _)| name == path)
+                    .map(|(_, size)| *size);
+                size += found?;
+            }
+            if size == 0 {
+                None
+            } else {
+                Some(size)
+            }
+        } else if detail.safetensors_bytes > 0 {
+            Some(detail.safetensors_bytes)
+        } else {
+            None
+        }
+    }
+
+    /// The number of parameters of the model, read from the name of the
+    /// repository.
+    ///
+    /// The hub only knows the exact number of parameters for a repository
+    /// with safetensors files. A GGUF repository carries it in its name,
+    /// like `Qwen3.5-9B-GGUF`.
+    pub fn parameters_from_name(&self) -> Option<u64> {
+        let name = self.id.to_uppercase();
+        let bytes = name.as_bytes();
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'B' && index > 0 && bytes[index - 1].is_ascii_digit() {
+                // Read the number that ends with the `B` backwards.
+                let mut start = index - 1;
+                while start > 0 && (bytes[start - 1].is_ascii_digit() || bytes[start - 1] == b'.') {
+                    start -= 1;
+                }
+                let text = &name[start..index];
+                if let Ok(value) = text.parse::<f64>() {
+                    // A number in billions: `9B` is nine billion parameters.
+                    // The first one is the size of the model; a name like
+                    // `Qwen3-30B-A3B` describes the active parameters after
+                    // it.
+                    return Some((value * 1_000_000_000.0) as u64);
+                }
+            }
+            index += 1;
         }
         None
     }
@@ -536,6 +746,8 @@ mod tests {
             created_at: None,
             tags: vec!["safetensors".to_string()],
             siblings: Vec::new(),
+            size_bytes: None,
+            parameters: None,
         };
         assert!(!model.is_runnable());
         assert_eq!(model.family().map(|family| family.as_str()), Some("qwen3-tts"));
@@ -559,11 +771,81 @@ mod tests {
                 siblings: vec![crate::hub::HubSibling {
                     rfilename: "Qwen3.5-9B-Q4_K_M.gguf".to_string(),
                 }],
+                size_bytes: None,
+                parameters: None,
             };
             assert!(model.is_runnable(), "{pipeline_tag} was dropped");
             assert_eq!(model.format(), "gguf");
             assert_eq!(model.engine_id(), "llama.cpp");
         }
+    }
+
+    /// A repository that keeps its quantisations in directories must not
+    /// mix the parts of one quantisation with the parts of another, and
+    /// the unquantised files come last.
+    #[test]
+    fn a_split_repository_picks_one_quantisation() {
+        let model = HubModel {
+            id: "unsloth/Qwen3.5-35B-A3B-GGUF".to_string(),
+            pipeline_tag: Some("image-text-to-text".to_string()),
+            library_name: None,
+            downloads: 100,
+            likes: 1,
+            last_modified: None,
+            created_at: None,
+            tags: vec!["gguf".to_string()],
+            siblings: vec![
+                crate::hub::HubSibling {
+                    rfilename: "BF16/Qwen3.5-35B-A3B-BF16-00001-of-00002.gguf".to_string(),
+                },
+                crate::hub::HubSibling {
+                    rfilename: "BF16/Qwen3.5-35B-A3B-BF16-00002-of-00002.gguf".to_string(),
+                },
+                crate::hub::HubSibling {
+                    rfilename: "Qwen3.5-35B-A3B-Q4_K_M.gguf".to_string(),
+                },
+            ],
+            size_bytes: None,
+            parameters: None,
+        };
+        assert_eq!(
+            model.chosen_files(),
+            vec!["Qwen3.5-35B-A3B-Q4_K_M.gguf".to_string()]
+        );
+        assert_eq!(model.quant().as_deref(), Some("Q4_K_M"));
+    }
+
+    /// A repository whose checkpoint is split keeps every part of it.
+    #[test]
+    fn a_split_checkpoint_keeps_its_parts() {
+        let model = HubModel {
+            id: "someone/Model-GGUF".to_string(),
+            pipeline_tag: None,
+            library_name: None,
+            downloads: 100,
+            likes: 1,
+            last_modified: None,
+            created_at: None,
+            tags: vec!["gguf".to_string()],
+            siblings: vec![
+                crate::hub::HubSibling {
+                    rfilename: "Q4_K_M/Model-Q4_K_M-00001-of-00002.gguf".to_string(),
+                },
+                crate::hub::HubSibling {
+                    rfilename: "Q4_K_M/Model-Q4_K_M-00002-of-00002.gguf".to_string(),
+                },
+                crate::hub::HubSibling {
+                    rfilename: "Q8_0/Model-Q8_0-00001-of-00002.gguf".to_string(),
+                },
+            ],
+            size_bytes: None,
+            parameters: None,
+        };
+        assert_eq!(model.chosen_files().len(), 2);
+        assert!(model
+            .chosen_files()
+            .iter()
+            .all(|path| path.starts_with("Q4_K_M/")));
     }
 
     /// A community model without a task is a language model when it holds a
@@ -582,6 +864,8 @@ mod tests {
             siblings: vec![crate::hub::HubSibling {
                 rfilename: "Qwen3.5-9B-Q4_K_M.gguf".to_string(),
             }],
+            size_bytes: None,
+            parameters: None,
         };
         assert!(model.is_runnable());
         assert_eq!(model.family().map(|family| family.as_str()), Some("llm"));

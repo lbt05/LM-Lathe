@@ -120,6 +120,10 @@ export interface DiscoveredModel {
   quant: string | null;
   files: string[];
   installed: boolean;
+  /** The size of the download in bytes. */
+  size_bytes?: number | null;
+  /** The number of parameters of the model. */
+  parameters?: number | null;
 }
 
 /** The answer of a search of the hub. */

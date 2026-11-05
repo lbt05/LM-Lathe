@@ -378,6 +378,8 @@ async fn discover_models(
                 installed: known_spec
                     .map(|spec| spec.is_installed())
                     .unwrap_or(false),
+                size_bytes: model.size_bytes,
+                parameters: model.parameters,
             }
         })
         .collect();

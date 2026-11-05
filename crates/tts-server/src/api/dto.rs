@@ -304,6 +304,10 @@ pub struct DiscoveredModelDto {
     pub files: Vec<String>,
     /// `true` when the checkpoint is already on the disk.
     pub installed: bool,
+    /// The size of the download in bytes.
+    pub size_bytes: Option<u64>,
+    /// The number of parameters of the model.
+    pub parameters: Option<u64>,
 }
 
 /// The answer of a search of the hub.

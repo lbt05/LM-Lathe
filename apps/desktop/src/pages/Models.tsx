@@ -170,6 +170,7 @@ export default function Models({
   const [hubDropped, setHubDropped] = useState(0);
   const [hubLoading, setHubLoading] = useState(false);
   const [hubSearched, setHubSearched] = useState(false);
+  const [hubSort, setHubSort] = useState("size");
 
   const models = store.models;
 
@@ -223,6 +224,31 @@ export default function Models({
     () => models.reduce((sum, model) => sum + model.size_bytes, 0),
     [models],
   );
+
+  // The order of the results of the hub. The models without a size come
+  // last; the hub does not know the size of every repository.
+  const sortedHub = useMemo(() => {
+    const list = [...hubResults];
+    list.sort((left, right) => {
+      switch (hubSort) {
+        case "parameters":
+          return (right.parameters ?? 0) - (left.parameters ?? 0);
+        case "name":
+          return left.repo.localeCompare(right.repo);
+        case "downloads":
+          return right.downloads - left.downloads;
+        default: {
+          const leftSize = left.size_bytes ?? 0;
+          const rightSize = right.size_bytes ?? 0;
+          if (!leftSize && !rightSize) return left.repo.localeCompare(right.repo);
+          if (!leftSize) return 1;
+          if (!rightSize) return -1;
+          return leftSize - rightSize;
+        }
+      }
+    });
+    return list;
+  }, [hubResults, hubSort]);
 
   // Searches the Hugging Face Hub. The hub is asked when the search is
   // confirmed, not with every keystroke.
@@ -465,6 +491,18 @@ export default function Models({
                 <Icon name="search" />
                 搜索
               </button>
+              {hubResults.length ? (
+                <SortSelect
+                  value={hubSort}
+                  options={[
+                    ["size", "文件大小"],
+                    ["parameters", "参数量"],
+                    ["name", "名称"],
+                    ["downloads", "下载量"],
+                  ]}
+                  onChange={setHubSort}
+                />
+              ) : null}
             </div>
             {hubResults.length ? (
               <div className="tablewrap">
@@ -472,16 +510,15 @@ export default function Models({
                   <thead>
                     <tr>
                       <th>模型</th>
+                      <th className="num">参数量</th>
+                      <th className="num">文件大小</th>
                       <th>用途</th>
                       <th>格式</th>
-                      <th className="num">下载量</th>
-                      <th>最近更新</th>
-                      <th>许可证</th>
                       <th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {hubResults.map((model) => (
+                    {sortedHub.map((model) => (
                       <tr key={model.repo}>
                         <td>
                           <span className="cellstack">
@@ -492,9 +529,17 @@ export default function Models({
                             <span className="sub">
                               {model.quant
                                 ? `${model.quant} · 只下载这一个量化`
-                                : "safetensors 权重"}
+                                : "GGUF 权重"}
                             </span>
                           </span>
+                        </td>
+                        <td className="num">
+                          {model.parameters
+                            ? `${(model.parameters / 1e9).toFixed(1)}B`
+                            : "—"}
+                        </td>
+                        <td className="num">
+                          {model.size_bytes ? formatBytes(model.size_bytes) : "—"}
                         </td>
                         <td>
                           <Tag tone={model.family === "llm" ? "llm" : "tts"}>
@@ -502,17 +547,6 @@ export default function Models({
                           </Tag>
                         </td>
                         <td>{model.format}</td>
-                        <td className="num">{model.downloads.toLocaleString("zh-CN")}</td>
-                        <td>
-                          <span className="sub">
-                            {model.last_modified
-                              ? new Date(model.last_modified).toLocaleDateString("zh-CN")
-                              : "—"}
-                          </span>
-                        </td>
-                        <td>
-                          <span className="sub">{model.license ?? "—"}</span>
-                        </td>
                         <td>
                           <div className="tbl__actions">
                             <button
