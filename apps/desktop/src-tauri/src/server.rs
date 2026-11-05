@@ -22,6 +22,9 @@ pub struct ServerState {
     pub stdin: Mutex<Option<ChildStdin>>,
     /// The base URL of the backend.
     pub base: Mutex<Option<String>>,
+    /// Held while the backend starts, so that two callers do not start two
+    /// backends.
+    pub startup: Mutex<()>,
 }
 
 /// The name of the backend binary.
@@ -114,15 +117,96 @@ fn platform_triple() -> &'static str {
 }
 
 /// Picks a free TCP port.
-fn free_port() -> Result<u16, String> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .map_err(|err| format!("failed to reserve a port: {err}"))?;
-    let port = listener
-        .local_addr()
-        .map_err(|err| format!("failed to read the port: {err}"))?
-        .port();
-    drop(listener);
-    Ok(port)
+/// The port the backend listens on.
+///
+/// The port is stable, so the URL of the local gateway does not change with
+/// every restart. `LMLATHE_PORT` overrides it.
+const DEFAULT_PORT: u16 = 54321;
+
+/// The number of ports the application tries before it gives up.
+const PORT_RANGE: u16 = 64;
+
+/// What the application does with a port.
+enum PortChoice {
+    /// The port is free, the backend is started there.
+    Start(u16),
+    /// The port already serves the build the application expects.
+    Reuse(u16),
+}
+
+/// The port the application wants to use.
+fn preferred_port() -> u16 {
+    std::env::var("LMLATHE_PORT")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|port| *port > 0)
+        .unwrap_or(DEFAULT_PORT)
+}
+
+/// The fingerprint of a binary: its path and the time it was written.
+fn build_fingerprint(path: &std::path::Path) -> String {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return "unknown".to_string();
+    };
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|since| since.as_secs())
+        .unwrap_or_default();
+    format!("{}:{}", path.display(), modified)
+}
+
+/// Asks a running backend for its build fingerprint.
+///
+/// The request is a plain HTTP/1.1 GET, the shell has no HTTP client.
+fn probe_build(port: u16) -> Option<String> {
+    use std::io::{Read, Write};
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
+    stream
+        .write_all(b"GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .ok()?;
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).ok()?;
+    let start = answer.find("\"build\"")?;
+    let rest = &answer[start + "\"build\"".len()..];
+    let start = rest.find(':')? + 1;
+    let rest = &rest[start..];
+    let start = rest.find('"')? + 1;
+    let end = rest[start..].find('"')? + start;
+    Some(rest[start..end].to_string())
+}
+
+/// Picks the port for the backend.
+///
+/// The preferred port is used when it is free. When it is taken, the running
+/// server is asked for its build: if it is the build the application expects,
+/// the application reuses it, otherwise the next port is tried.
+fn select_port(preferred: u16, fingerprint: &str) -> Result<PortChoice, String> {
+    for offset in 0..PORT_RANGE {
+        let port = preferred.saturating_add(offset);
+        if port == 0 {
+            break;
+        }
+        match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => {
+                drop(listener);
+                return Ok(PortChoice::Start(port));
+            }
+            Err(_) => {
+                if let Some(build) = probe_build(port) {
+                    if build == fingerprint {
+                        return Ok(PortChoice::Reuse(port));
+                    }
+                }
+            }
+        }
+    }
+    Err(format!(
+        "no free port for the backend, {preferred} and the ports after it are taken"
+    ))
 }
 
 /// Waits until the backend accepts connections.
@@ -149,14 +233,30 @@ fn data_directory() -> Option<PathBuf> {
 /// Starts the backend and returns its base URL.
 #[tauri::command]
 pub async fn start_server(app: AppHandle, state: State<'_, ServerState>) -> Result<String, String> {
+    // Only one backend may start at a time, the window can ask twice.
+    let _startup = state.startup.lock().unwrap();
+
     // The server is already running.
     if let Some(base) = state.base.lock().unwrap().clone() {
         return Ok(base);
     }
 
     let binary = server_binary(&app)?;
-    let port = free_port()?;
+    let fingerprint = build_fingerprint(&binary);
+    let (port, reuse) = match select_port(preferred_port(), &fingerprint)? {
+        PortChoice::Start(port) => (port, false),
+        PortChoice::Reuse(port) => (port, true),
+    };
     let base = format!("http://127.0.0.1:{port}");
+
+    // The port already serves the build the application expects: the running
+    // server is used, the application does not start a second one.
+    if reuse {
+        if let Ok(mut slot) = state.base.lock() {
+            *slot = Some(base.clone());
+        }
+        return Ok(base);
+    }
 
     let mut command = Command::new(&binary);
     command

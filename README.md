@@ -45,8 +45,14 @@ cargo build --release
 ./target/release/tts-server speak --model mock --text "你好，世界" --out hello.wav
 
 # Start the HTTP API
-./target/release/tts-server serve --port 8080
+./target/release/tts-server serve --port 54321
 ```
+
+The local gateway listens on a fixed port, `54321`, so its URL does not change
+with every restart. `LMLATHE_PORT` moves it. When the port is already taken
+by a server of the same build, the desktop application reuses that server
+instead of starting a second one; when a different build holds the port, the
+application moves to the next free port and shows the URL it uses.
 
 All state lives in `~/.local-ai-manager` (override with `--data-dir` or
 `LOCAL_AI_MANAGER_HOME`):
@@ -292,7 +298,7 @@ the engine to time out.
 ### OpenAI compatible synthesis
 
 ```bash
-curl -X POST http://127.0.0.1:8080/v1/audio/speech \
+curl -X POST http://127.0.0.1:54321/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen3-tts","input":"你好，欢迎使用本地 AI 工作台。","voice":"voice_001"}' \
   --output speech.wav
@@ -303,17 +309,17 @@ the OpenAI schema use the internal extensions:
 
 ```bash
 # Voice design
-curl -X POST http://127.0.0.1:8080/v1/tts/voices/design \
+curl -X POST http://127.0.0.1:54321/v1/tts/voices/design \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen3-tts","prompt":"青年女性，稚嫩、害羞、略带怯意","name":"府中贴身婢女"}'
 
 # Voice cloning
-curl -X POST http://127.0.0.1:8080/v1/tts/voices/clone \
+curl -X POST http://127.0.0.1:54321/v1/tts/voices/clone \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen3-tts","reference_audio":"/path/reference.wav","reference_text":"参考文本"}'
 
 # Multi character scene (Drama 3)
-curl -X POST http://127.0.0.1:8080/v1/tts/speak \
+curl -X POST http://127.0.0.1:54321/v1/tts/speak \
   -H "Content-Type: application/json" \
   -d '{"model":"drama-3","input":"<|speaker:0|> 你好 <|speaker:1|> 再见",
        "parameters":{"family":"fish_drama3","references":[{"audio_path":"/tmp/a.wav","text":"参考"}]}}'
@@ -359,7 +365,7 @@ tts-server engines list|versions|install|use|uninstall
 tts-server speak --model qwen3-tts --text "你好" --voice voice_001 --out hi.wav
 tts-server play hi.wav
 tts-server status
-tts-server serve --host 127.0.0.1 --port 8080
+tts-server serve --host 127.0.0.1 --port 54321
 ```
 
 ## Audio manager

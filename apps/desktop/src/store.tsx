@@ -16,7 +16,14 @@ import {
   type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { api, setBaseUrl, type EngineAsset, type Model, type Status } from "./api";
+import {
+  api,
+  setBaseUrl,
+  type EngineAsset,
+  type Model,
+  type Route,
+  type Status,
+} from "./api";
 
 /** The four top level views of the application. */
 export type View = "models" | "runtime" | "services" | "settings";
@@ -70,6 +77,7 @@ interface Store {
   models: Model[];
   status: Status | null;
   engines: EngineAsset[];
+  routes: Route[];
   refresh: () => Promise<void>;
 
   inspector: Inspector;
@@ -111,10 +119,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [base, setBase] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const [manualUrl, setManualUrl] = useState("http://127.0.0.1:8080");
+  const [manualUrl, setManualUrl] = useState("http://127.0.0.1:54321");
   const [models, setModels] = useState<Model[]>([]);
   const [status, setStatus] = useState<Status | null>(null);
   const [engines, setEngines] = useState<EngineAsset[]>([]);
+  const [routes, setRoutes] = useState<Route[]>([]);
   const [inspector, setInspector] = useState<Inspector>(null);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -158,14 +167,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextModels, nextStatus, nextEngines] = await Promise.all([
+      const [nextModels, nextStatus, nextEngines, nextRoutes] = await Promise.all([
         api.models(),
         api.status(),
         api.engines().catch(() => []),
+        api.routes().catch(() => []),
       ]);
       setModels(nextModels);
       setStatus(nextStatus);
       setEngines(nextEngines);
+      setRoutes(nextRoutes);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -203,6 +214,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setModels(nextModels);
       setStatus(nextStatus);
       setEngines(await api.engines().catch(() => []));
+      setRoutes(await api.routes().catch(() => []));
       log("ok", `已连接本地服务 ${url}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -372,6 +384,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       models,
       status,
       engines,
+      routes,
       refresh,
       inspector,
       setInspector,
@@ -395,6 +408,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       models,
       status,
       engines,
+      routes,
       refresh,
       inspector,
       events,

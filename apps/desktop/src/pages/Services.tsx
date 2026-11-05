@@ -16,22 +16,13 @@ import {
 } from "../ui";
 
 /** The HTTP surface the local service exposes. */
-const ROUTES = [
-  "GET  /health",
-  "GET  /v1/models",
-  "GET  /v1/tts/models",
-  "GET  /v1/tts/status",
-  "POST /v1/audio/speech",
-  "POST /v1/tts/speak",
-  "GET  /v1/tts/voices",
-  "POST /v1/tts/voices/design",
-  "POST /v1/tts/voices/clone",
-];
-
 export default function Services() {
   const store = useStore();
   const runtimes = store.status?.runtimes ?? [];
   const running = runtimes.filter((runtime) => runtime.state === "running");
+  // The route table comes from the gateway itself, so it cannot drift away
+  // from the routes that are really served.
+  const routes = store.routes;
   const modelOf = (id: string) =>
     store.models.find((model) => model.id === id)?.name ?? id;
 
@@ -64,7 +55,7 @@ export default function Services() {
             }
           />
           <Fact k="BIND" v={store.base ?? "—"} />
-          <Fact k="ROUTES" v={String(ROUTES.length)} />
+          <Fact k="ROUTES" v={String(routes.length)} />
           <Fact k="INSTANCES" v={String(running.length)} />
           <Fact
             k="AUTH"
@@ -72,11 +63,33 @@ export default function Services() {
           />
         </div>
         <div className="sheet__body" style={{ paddingTop: 0 }}>
-          <div className="code">
-            {ROUTES.map((route) => (
-              <div key={route}>{route}</div>
-            ))}
-          </div>
+          {routes.length ? (
+            <div className="tablewrap">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>方法</th>
+                    <th>路径</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {routes.map((route) => (
+                    <tr key={`${route.method} ${route.path}`}>
+                      <td className="mono">{route.method}</td>
+                      <td className="mono">{route.path}</td>
+                      <td>{route.summary}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <Empty
+              title="还没有路由信息"
+              text={store.base ? "网关没有报告路由表。" : "尚未连接本地服务"}
+            />
+          )}
         </div>
       </section>
 
@@ -304,7 +317,7 @@ export function ServiceInspector({ id, tab }: { id: string; tab: string }) {
         ) : null}
         <Note title="接入方式">
           <p className="mono">
-            POST {store.base ?? "http://127.0.0.1:8080"}/v1/audio/speech
+            POST {store.base ?? "http://127.0.0.1:54321"}/v1/audio/speech
           </p>
         </Note>
       </>

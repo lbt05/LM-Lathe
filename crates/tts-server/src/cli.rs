@@ -69,7 +69,7 @@ pub struct ServeArgs {
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
     /// Port to bind to.
-    #[arg(long, default_value_t = 8080)]
+    #[arg(long, default_value_t = 54321)]
     pub port: u16,
 }
 

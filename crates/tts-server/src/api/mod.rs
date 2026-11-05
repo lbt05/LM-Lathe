@@ -33,11 +33,68 @@ pub struct ApiState {
     pub service: Arc<TtsService>,
 }
 
+/// One route of the local gateway.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RouteInfo {
+    /// The HTTP method.
+    pub method: &'static str,
+    /// The path of the route.
+    pub path: &'static str,
+    /// What the route does.
+    pub summary: &'static str,
+}
+
+/// The routes of the local gateway.
+///
+/// The desktop application shows this list on the 服务 page, so it has to
+/// describe the real gateway and not a hand-written copy of it.
+pub const ROUTES: &[RouteInfo] = &[
+    RouteInfo { method: "GET", path: "/health", summary: "服务健康状态与可用显存" },
+    RouteInfo { method: "GET", path: "/v1/routes", summary: "网关路由表" },
+    RouteInfo { method: "GET", path: "/v1/models", summary: "可以服务的模型（已下载且机器能跑）" },
+    RouteInfo { method: "GET", path: "/v1/tts/models", summary: "完整模型目录，含未下载的模型" },
+    RouteInfo { method: "GET", path: "/v1/tts/status", summary: "运行时状态与调度器快照" },
+    RouteInfo { method: "POST", path: "/v1/audio/speech", summary: "OpenAI 兼容的语音合成" },
+    RouteInfo { method: "POST", path: "/v1/tts/speak", summary: "语音合成，可带引擎参数" },
+    RouteInfo { method: "GET", path: "/v1/tts/voices", summary: "声音库列表" },
+    RouteInfo { method: "POST", path: "/v1/tts/voices", summary: "新建声音" },
+    RouteInfo { method: "POST", path: "/v1/tts/voices/design", summary: "声音设计" },
+    RouteInfo { method: "POST", path: "/v1/tts/voices/clone", summary: "声音克隆" },
+    RouteInfo { method: "GET", path: "/v1/tts/voices/{id}", summary: "声音详情" },
+    RouteInfo { method: "PATCH", path: "/v1/tts/voices/{id}", summary: "修改声音" },
+    RouteInfo { method: "DELETE", path: "/v1/tts/voices/{id}", summary: "删除声音" },
+    RouteInfo { method: "GET", path: "/v1/tts/voices/{id}/samples", summary: "声音样例列表" },
+    RouteInfo { method: "GET", path: "/v1/tts/voices/{id}/samples/{*name}", summary: "声音样例文件" },
+    RouteInfo { method: "POST", path: "/v1/tts/models/{id}/load", summary: "加载模型" },
+    RouteInfo { method: "POST", path: "/v1/tts/models/{id}/unload", summary: "卸载模型" },
+    RouteInfo { method: "POST", path: "/v1/tts/models/{id}/pin", summary: "固定模型，常驻显存" },
+    RouteInfo { method: "POST", path: "/v1/tts/models/{id}/unpin", summary: "取消固定" },
+    RouteInfo { method: "POST", path: "/v1/tts/models/{id}/install", summary: "下载模型" },
+    RouteInfo { method: "GET", path: "/v1/tts/models/{id}/install", summary: "下载进度" },
+    RouteInfo { method: "POST", path: "/v1/tts/models/{id}/uninstall", summary: "删除本地模型" },
+    RouteInfo { method: "GET", path: "/v1/tts/models/{id}/logs", summary: "引擎日志" },
+    RouteInfo { method: "GET", path: "/v1/runtimes", summary: "推理运行时列表" },
+    RouteInfo { method: "GET", path: "/v1/runtimes/{id}", summary: "单个推理运行时" },
+    RouteInfo { method: "GET", path: "/v1/runtimes/{id}/versions", summary: "可安装的版本" },
+    RouteInfo { method: "POST", path: "/v1/runtimes/{id}/install", summary: "安装引擎" },
+    RouteInfo { method: "GET", path: "/v1/runtimes/{id}/install-progress", summary: "安装进度" },
+    RouteInfo { method: "POST", path: "/v1/runtimes/{id}/activate", summary: "切换当前版本" },
+    RouteInfo { method: "POST", path: "/v1/runtimes/{id}/uninstall", summary: "卸载引擎版本" },
+    RouteInfo { method: "POST", path: "/v1/runtimes/{id}/health", summary: "引擎健康检查" },
+    RouteInfo { method: "GET", path: "/v1/audio/{file}", summary: "生成的音频文件" },
+];
+
+/// `GET /v1/routes`
+async fn list_routes() -> impl IntoResponse {
+    axum::Json(ROUTES)
+}
+
 /// Builds the router.
 pub fn router(service: Arc<TtsService>) -> Router {
     let state = ApiState { service };
     Router::new()
         .route("/health", get(health))
+        .route("/v1/routes", get(list_routes))
         .route("/v1/models", get(list_models))
         .route("/v1/tts/models", get(list_catalogue))
         .route("/v1/tts/status", get(status))
@@ -94,6 +151,51 @@ pub fn router(service: Arc<TtsService>) -> Router {
         .with_state(state)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::ROUTES;
+
+    /// The route table of the gateway must not drift away from the router.
+    ///
+    /// Every registered route has to appear in the table, and the table must
+    /// not describe a route that does not exist.
+    #[test]
+    fn the_route_table_matches_the_router() {
+        let source = include_str!("mod.rs");
+        let mut registered: Vec<String> = Vec::new();
+        // The needle is assembled from two pieces, so that the test itself
+        // does not contain the pattern it looks for.
+        let needle = [".ro", "ute("].concat();
+        let mut rest = source;
+        while let Some(index) = rest.find(&needle) {
+            rest = &rest[index + needle.len()..];
+            let trimmed = rest.trim_start();
+            if !trimmed.starts_with('"') {
+                continue;
+            }
+            let body = &trimmed[1..];
+            if let Some(end) = body.find('"') {
+                registered.push(body[..end].to_string());
+                rest = &body[end..];
+            }
+        }
+
+        let mut described: Vec<String> = ROUTES
+            .iter()
+            .map(|route| route.path.to_string())
+            .collect();
+        described.sort();
+        described.dedup();
+        registered.sort();
+        registered.dedup();
+
+        assert_eq!(
+            described, registered,
+            "the route table of the gateway does not match the router"
+        );
+    }
+}
+
 /// Error type of the API.
 pub struct ApiError(pub TtsError);
 
@@ -143,7 +245,29 @@ async fn health(State(state): State<ApiState>) -> impl IntoResponse {
         "status": "ok",
         "active_model": status.active_model,
         "available_bytes": status.scheduler.available_bytes,
+        "build": build_fingerprint(),
     }))
+}
+
+/// A fingerprint of the running binary.
+///
+/// The desktop application compares it with the fingerprint of the binary it
+/// would start. If both are the same, the server on the port is the build the
+/// application expects and it can be reused.
+pub fn build_fingerprint() -> String {
+    let Ok(exe) = std::env::current_exe() else {
+        return "unknown".to_string();
+    };
+    let Ok(meta) = std::fs::metadata(&exe) else {
+        return "unknown".to_string();
+    };
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|since| since.as_secs())
+        .unwrap_or_default();
+    format!("{}:{}", exe.display(), modified)
 }
 
 /// `GET /v1/tts/models`

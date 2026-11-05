@@ -70,7 +70,7 @@ export default function Settings() {
             className="input"
             style={{ width: "220px" }}
             value={url}
-            placeholder="http://127.0.0.1:8080"
+            placeholder="http://127.0.0.1:54321"
             onChange={(event) => setUrl(event.target.value)}
           />
           <button

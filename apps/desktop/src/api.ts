@@ -97,6 +97,12 @@ export interface Status {
   hardware: Hardware;
 }
 
+export interface Route {
+  method: string;
+  path: string;
+  summary: string;
+}
+
 export interface InstallProgress {
   model_id: string;
   state: string;
@@ -256,6 +262,7 @@ export const api = {
   health: () => request<{ status: string; active_model: string | null }>("/health"),
   status: () => request<Status>("/v1/tts/status"),
   models: () => request<Model[]>("/v1/tts/models"),
+  routes: () => request<Route[]>("/v1/routes"),
 
   loadModel: (id: string) =>
     request<Runtime>(`/v1/tts/models/${id}/load`, { method: "POST" }),
