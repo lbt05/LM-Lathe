@@ -17,6 +17,7 @@ pub mod engine_assets;
 pub mod error;
 pub mod hardware;
 pub mod installer;
+pub mod llm;
 pub mod paths;
 pub mod registry;
 pub mod runtime;
@@ -32,6 +33,7 @@ pub use engine_assets::{
 pub use error::{TtsError, TtsResult};
 pub use hardware::HardwareProfile;
 pub use installer::{InstallProgress, InstallReport, InstallTracker, ModelInstaller};
+pub use llm::{gguf_checkpoint, LlmRuntime, LlmRuntimeManager};
 pub use paths::AppPaths;
 pub use registry::{CompatibilityLevel, CompatibilityReport, TTSModelRegistry, TTSModelSpec};
 pub use runtime::{RuntimeSettings, RuntimeStatus, SynthesisResult, TTSRuntime, TTSRuntimeManager};
@@ -39,7 +41,7 @@ pub use service::TtsService;
 pub use types::{
     AudioFormat, AudioOutput, AudioReference, EngineMode, EngineSpecificParameters,
     FishDrama3Parameters, HealthStatus, ModelFamily, Qwen3TtsParameters, Qwen3TtsTaskType,
-    RuntimeHandle, RuntimeState, TTSRequest, TTSRuntimeConfig, TtsFeature,
+    LlmFeature, RuntimeHandle, RuntimeState, TTSRequest, TTSRuntimeConfig, TtsFeature,
 };
 pub use voice::{
     NewVoiceProfile, VoiceFilter, VoiceLibrary, VoicePatch, VoiceProfile, VoiceSample,

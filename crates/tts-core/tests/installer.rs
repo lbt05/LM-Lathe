@@ -90,6 +90,8 @@ fn spec() -> TTSModelSpec {
         size_bytes: 3_833_402_552,
         estimated_memory_bytes: 8 * 1024 * 1024 * 1024,
         features: vec![tts_core::types::TtsFeature::TextToSpeech],
+        llm_features: vec![],
+        files: vec![],
         hardware: Default::default(),
         mode: tts_core::types::EngineMode::SglangOmni,
         default_ttl_secs: None,

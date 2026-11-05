@@ -256,6 +256,9 @@ pub struct ModelDto {
     pub estimated_memory_bytes: u64,
     /// Capabilities.
     pub features: Vec<String>,
+    /// Capabilities of a language model.
+    #[serde(default)]
+    pub llm_features: Vec<String>,
     /// Compatibility with the current machine.
     pub compatible: bool,
     /// Compatibility level.

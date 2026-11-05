@@ -380,3 +380,66 @@ async fn the_installation_progress_is_reported() {
     assert_eq!(json["state"], "idle");
     assert_eq!(json["model_id"], "mock-echo");
 }
+
+#[tokio::test]
+async fn the_catalogue_knows_the_language_models() {
+    let dir = TempDir::new("api");
+    let (status, body) = get(router(&dir), "/v1/tts/models").await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    let models = json.as_array().unwrap();
+
+    let llama = models
+        .iter()
+        .find(|model| model["id"] == "qwen3-4b-gguf")
+        .expect("the language model is missing in the catalogue");
+    assert_eq!(llama["family"], "llm");
+    assert_eq!(llama["engine_id"], "llama.cpp");
+    assert_eq!(llama["format"], "gguf");
+    assert!(llama["llm_features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|feature| feature == "chat"));
+
+    // The speech models keep their family.
+    let speech = models
+        .iter()
+        .find(|model| model["id"] == "qwen3-tts-1.7b-base")
+        .expect("the speech model is missing in the catalogue");
+    assert_eq!(speech["family"], "qwen3-tts");
+}
+
+#[tokio::test]
+async fn a_chat_request_needs_a_language_model() {
+    let dir = TempDir::new("api");
+    let (status, body) = post_json(
+        router(&dir),
+        "/v1/chat/completions",
+        serde_json::json!({
+            "model": "mock-echo",
+            "messages": [{"role": "user", "content": "hello"}],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(json["kind"], "invalid_request");
+}
+
+#[tokio::test]
+async fn a_chat_request_without_a_model_is_rejected() {
+    let dir = TempDir::new("api");
+    let (status, body) = post_json(
+        router(&dir),
+        "/v1/chat/completions",
+        serde_json::json!({"messages": [{"role": "user", "content": "hello"}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(json["kind"], "invalid_request");
+}

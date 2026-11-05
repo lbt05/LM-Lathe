@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{TtsError, TtsResult};
 use crate::hardware::HardwareProfile;
-use crate::types::{EngineMode, ModelFamily, TtsFeature};
+use crate::types::{EngineMode, LlmFeature, ModelFamily, TtsFeature};
 
 /// Hardware requirements of a model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +122,15 @@ pub struct TTSModelSpec {
     /// Capabilities of the model.
     #[serde(default)]
     pub features: Vec<TtsFeature>,
+    /// Capabilities of a language model.
+    #[serde(default)]
+    pub llm_features: Vec<LlmFeature>,
+    /// Files of the repository that are downloaded.
+    ///
+    /// An empty list downloads the whole repository. A repository that keeps
+    /// one file per quantisation only needs the one the model points at.
+    #[serde(default)]
+    pub files: Vec<String>,
     /// Hardware requirements.
     #[serde(default)]
     pub hardware: HardwareRequirement,
@@ -178,6 +187,7 @@ pub struct TTSModelRegistry {
     specs: RwLock<BTreeMap<String, TTSModelSpec>>,
     aliases: RwLock<BTreeMap<String, String>>,
     models_root: PathBuf,
+    llm_models_root: PathBuf,
 }
 
 impl Default for TTSModelRegistry {
@@ -193,6 +203,7 @@ impl TTSModelRegistry {
             specs: RwLock::new(BTreeMap::new()),
             aliases: RwLock::new(BTreeMap::new()),
             models_root: crate::paths::AppPaths::discover().tts_models_root(),
+            llm_models_root: crate::paths::AppPaths::discover().llm_models_root(),
         }
     }
 
@@ -202,6 +213,9 @@ impl TTSModelRegistry {
         for spec in builtin_models() {
             registry.insert(spec);
         }
+        for spec in builtin_llm_models() {
+            registry.insert(spec);
+        }
         registry
     }
 
@@ -209,6 +223,17 @@ impl TTSModelRegistry {
     pub fn with_models_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.models_root = root.into();
         self
+    }
+
+    /// Sets the directory the language model checkpoints live in.
+    pub fn with_llm_models_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.llm_models_root = root.into();
+        self
+    }
+
+    /// The directory the language model checkpoints live in.
+    pub fn llm_models_root(&self) -> &Path {
+        &self.llm_models_root
     }
 
     /// The directory the checkpoints live in.
@@ -222,11 +247,13 @@ impl TTSModelRegistry {
     /// model is stored below the model root.
     pub fn install_path(&self, id: &str) -> Option<PathBuf> {
         let spec = self.resolve(id)?;
-        Some(
-            spec.local_path
-                .clone()
-                .unwrap_or_else(|| self.models_root.join(spec.slug())),
-        )
+        Some(spec.local_path.clone().unwrap_or_else(|| {
+            if spec.family == ModelFamily::Llm {
+                self.llm_models_root.join(spec.slug())
+            } else {
+                self.models_root.join(spec.slug())
+            }
+        }))
     }
 
     /// `true` when the checkpoint of the model is on the disk.
@@ -471,6 +498,8 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             default_ttl_secs: None,
             aliases: vec!["qwen3-tts".to_string(), "qwen3-tts-voicedesign".to_string()],
             launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
             local_path: None,
             notes: None,
         },
@@ -502,6 +531,8 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             default_ttl_secs: None,
             aliases: vec!["qwen3-tts-customvoice".to_string()],
             launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
             local_path: None,
             notes: None,
         },
@@ -530,6 +561,8 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             default_ttl_secs: None,
             aliases: vec![],
             launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
             local_path: None,
             notes: None,
         },
@@ -558,6 +591,8 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             default_ttl_secs: None,
             aliases: vec![],
             launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
             local_path: None,
             notes: None,
         },
@@ -591,6 +626,8 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             default_ttl_secs: None,
             aliases: vec![],
             launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
             local_path: None,
             notes: None,
         },
@@ -630,6 +667,8 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             default_ttl_secs: None,
             aliases: vec!["fish-drama-3".to_string(), "drama3".to_string()],
             launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
             local_path: None,
             notes: None,
         },
@@ -667,6 +706,8 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             default_ttl_secs: None,
             aliases: vec![],
             launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
             local_path: None,
             notes: None,
         },
@@ -703,6 +744,8 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             default_ttl_secs: None,
             aliases: vec![],
             launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
             local_path: None,
             notes: Some(
                 "Reference clips are sent as base64 WAV; up to 4 clips and 30 s in total."
@@ -738,6 +781,8 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             default_ttl_secs: None,
             aliases: vec![],
             launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
             local_path: None,
             notes: None,
         },
@@ -768,6 +813,130 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
             default_ttl_secs: Some(300),
             aliases: vec!["mock".to_string()],
             launch_args: vec![],
+            llm_features: vec![],
+            files: vec![],
+            local_path: None,
+            notes: None,
+        },
+    ]
+}
+
+/// The language models the application knows.
+///
+/// The checkpoints are GGUF files: llama.cpp serves them with an OpenAI
+/// compatible API. A repository keeps one file per quantisation, so every
+/// model names the single file it downloads.
+pub fn builtin_llm_models() -> Vec<TTSModelSpec> {
+    const GB: u64 = 1024 * 1024 * 1024;
+
+    vec![
+        TTSModelSpec {
+            id: "qwen3-8b-gguf".to_string(),
+            name: "Qwen3 8B (Q4_K_M)".to_string(),
+            family: ModelFamily::Llm,
+            engine_id: "llama.cpp".to_string(),
+            hf_repo: "Qwen/Qwen3-8B-GGUF".to_string(),
+            version: "Q4_K_M".to_string(),
+            format: "gguf".to_string(),
+            size_bytes: 5_027_783_488,
+            estimated_memory_bytes: 6 * GB,
+            features: vec![],
+            llm_features: vec![
+                LlmFeature::Chat,
+                LlmFeature::Completion,
+                LlmFeature::ToolUse,
+                LlmFeature::LongContext,
+            ],
+            hardware: HardwareRequirement {
+                platforms: vec!["linux".to_string(), "macos".to_string()],
+                require_cuda: false,
+                require_apple_silicon: false,
+                require_mlx: false,
+                min_total_ram_bytes: 8 * GB,
+                min_cuda_compute: None,
+                notes: Some(
+                    "llama.cpp serves the checkpoint on the CPU and hands the layers to the \
+                     GPU when there is one."
+                        .to_string(),
+                ),
+            },
+            mode: EngineMode::LlamaCpp,
+            default_ttl_secs: Some(600),
+            aliases: vec!["qwen3-8b".to_string()],
+            launch_args: vec!["--ctx-size".to_string(), "8192".to_string()],
+            files: vec!["Qwen3-8B-Q4_K_M.gguf".to_string()],
+            local_path: None,
+            notes: None,
+        },
+        TTSModelSpec {
+            id: "qwen3-4b-gguf".to_string(),
+            name: "Qwen3 4B (Q4_K_M)".to_string(),
+            family: ModelFamily::Llm,
+            engine_id: "llama.cpp".to_string(),
+            hf_repo: "Qwen/Qwen3-4B-GGUF".to_string(),
+            version: "Q4_K_M".to_string(),
+            format: "gguf".to_string(),
+            size_bytes: 2_503_216_896,
+            estimated_memory_bytes: 3 * GB,
+            features: vec![],
+            llm_features: vec![
+                LlmFeature::Chat,
+                LlmFeature::Completion,
+                LlmFeature::ToolUse,
+                LlmFeature::LongContext,
+            ],
+            hardware: HardwareRequirement {
+                platforms: vec!["linux".to_string(), "macos".to_string()],
+                require_cuda: false,
+                require_apple_silicon: false,
+                require_mlx: false,
+                min_total_ram_bytes: 6 * GB,
+                min_cuda_compute: None,
+                notes: None,
+            },
+            mode: EngineMode::LlamaCpp,
+            default_ttl_secs: Some(600),
+            aliases: vec!["qwen3-4b".to_string()],
+            launch_args: vec!["--ctx-size".to_string(), "8192".to_string()],
+            files: vec!["Qwen3-4B-Q4_K_M.gguf".to_string()],
+            local_path: None,
+            notes: None,
+        },
+        TTSModelSpec {
+            id: "llama-3.3-70b-instruct-gguf".to_string(),
+            name: "Llama 3.3 70B Instruct (Q4_K_M)".to_string(),
+            family: ModelFamily::Llm,
+            engine_id: "llama.cpp".to_string(),
+            hf_repo: "unsloth/Llama-3.3-70B-Instruct-GGUF".to_string(),
+            version: "Q4_K_M".to_string(),
+            format: "gguf".to_string(),
+            size_bytes: 42_515_362_560,
+            estimated_memory_bytes: 48 * GB,
+            features: vec![],
+            llm_features: vec![
+                LlmFeature::Chat,
+                LlmFeature::Completion,
+                LlmFeature::ToolUse,
+                LlmFeature::LongContext,
+            ],
+            hardware: HardwareRequirement {
+                platforms: vec!["linux".to_string(), "macos".to_string()],
+                require_cuda: false,
+                require_apple_silicon: false,
+                require_mlx: false,
+                min_total_ram_bytes: 64 * GB,
+                min_cuda_compute: None,
+                notes: Some(
+                    "Needs a machine with a lot of memory; a workstation with a GPU of 24 GB \
+                     or more is the usual way to run it."
+                        .to_string(),
+                ),
+            },
+            mode: EngineMode::LlamaCpp,
+            default_ttl_secs: Some(600),
+            aliases: vec!["llama-3.3-70b".to_string()],
+            launch_args: vec!["--ctx-size".to_string(), "8192".to_string()],
+            files: vec!["Llama-3.3-70B-Instruct-Q4_K_M.gguf".to_string()],
             local_path: None,
             notes: None,
         },

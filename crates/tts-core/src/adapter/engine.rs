@@ -198,6 +198,11 @@ impl SGLangOmniAdapter {
                     .unwrap_or_else(|| self.settings.mlx_binary.clone());
                 (binary, args)
             }
+            EngineMode::LlamaCpp => {
+                // The language models run in their own runtime, they never
+                // reach the speech engine.
+                ("llama-server".to_string(), Vec::new())
+            }
             EngineMode::Mock => ("mock".to_string(), Vec::new()),
         }
     }

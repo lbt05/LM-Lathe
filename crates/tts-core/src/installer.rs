@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{TtsError, TtsResult};
 use crate::registry::TTSModelSpec;
+use crate::types::ModelFamily;
 
 /// Default Hugging Face endpoint.
 pub const HUB_ENDPOINT: &str = "https://huggingface.co";
@@ -124,6 +125,7 @@ impl InstallTracker {
 pub struct ModelInstaller {
     client: reqwest::Client,
     root: PathBuf,
+    llm_root: PathBuf,
     endpoint: String,
     token: Option<String>,
 }
@@ -135,14 +137,22 @@ impl ModelInstaller {
             .user_agent(concat!("local-ai-manager/", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap_or_default();
+        let root = root.into();
         Self {
             client,
-            root: root.into(),
+            llm_root: root.clone(),
+            root,
             endpoint: HUB_ENDPOINT.to_string(),
             token: std::env::var("HF_TOKEN")
                 .ok()
                 .filter(|token| !token.trim().is_empty()),
         }
+    }
+
+    /// Sets the directory the language model checkpoints live in.
+    pub fn with_llm_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.llm_root = root.into();
+        self
     }
 
     /// Overrides the hub endpoint.
@@ -153,9 +163,13 @@ impl ModelInstaller {
 
     /// The directory a checkpoint is stored in.
     pub fn target_dir(&self, spec: &TTSModelSpec) -> PathBuf {
-        spec.local_path
-            .clone()
-            .unwrap_or_else(|| self.root.join(spec.slug()))
+        spec.local_path.clone().unwrap_or_else(|| {
+            if spec.family == ModelFamily::Llm {
+                self.llm_root.join(spec.slug())
+            } else {
+                self.root.join(spec.slug())
+            }
+        })
     }
 
     /// `true` when the checkpoint is present on the disk.
@@ -193,10 +207,14 @@ impl ModelInstaller {
             .await
             .map_err(|err| TtsError::Serialization(err.to_string()))?;
 
+        // A repository that keeps one file per quantisation would download
+        // every variant, so a model names the files it needs.
+        let wanted: Vec<String> = spec.files.clone();
         Ok(files
             .into_iter()
             .filter(|file| file.kind == "file")
             .filter(|file| !is_optional_asset(&file.path))
+            .filter(|file| wanted.is_empty() || wanted.iter().any(|path| path == &file.path))
             .collect())
     }
 

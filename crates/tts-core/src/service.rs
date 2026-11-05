@@ -16,6 +16,7 @@ use crate::engine_assets::EngineAssetManager;
 use crate::error::TtsResult;
 use crate::hardware::HardwareProfile;
 use crate::installer::{InstallTracker, ModelInstaller};
+use crate::llm::LlmRuntimeManager;
 use crate::paths::AppPaths;
 use crate::registry::TTSModelRegistry;
 use crate::runtime::{RuntimeSettings, TTSRuntimeManager};
@@ -44,6 +45,8 @@ pub struct TtsService {
     pub installs: InstallTracker,
     /// Owns the installed inference engines.
     pub engines: Arc<EngineAssetManager>,
+    /// Runtime of the language models.
+    pub llm: Arc<LlmRuntimeManager>,
 }
 
 impl TtsService {
@@ -55,10 +58,15 @@ impl TtsService {
     /// Builds the service with an explicit data directory.
     pub fn with_paths(paths: AppPaths) -> TtsResult<Arc<Self>> {
         paths.ensure()?;
-        let registry =
-            Arc::new(TTSModelRegistry::builtin().with_models_root(paths.tts_models_root()));
+        let registry = Arc::new(
+            TTSModelRegistry::builtin()
+                .with_models_root(paths.tts_models_root())
+                .with_llm_models_root(paths.llm_models_root()),
+        );
         let hardware = HardwareProfile::detect();
-        let installer = Arc::new(ModelInstaller::new(paths.tts_models_root()));
+        let installer = Arc::new(
+            ModelInstaller::new(paths.tts_models_root()).with_llm_root(paths.llm_models_root()),
+        );
 
         // The pool covers the unified memory of the machine; a quarter stays
         // available for the operating system and for transient allocations.
@@ -103,6 +111,13 @@ impl TtsService {
         );
         manager.scheduler().spawn_sweeper();
 
+        let llm = LlmRuntimeManager::new(
+            registry.clone(),
+            scheduler.clone(),
+            engines.clone(),
+            paths.llm_logs_root(),
+        );
+
         Ok(Arc::new(Self {
             manager,
             library,
@@ -114,12 +129,14 @@ impl TtsService {
             installer,
             installs: InstallTracker::default(),
             engines,
+            llm,
         }))
     }
 
     /// Stops every runtime.
     pub async fn shutdown(&self) {
         self.manager.shutdown().await;
+        self.llm.shutdown().await;
         self.scheduler.shutdown();
     }
 }

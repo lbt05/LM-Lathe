@@ -106,6 +106,11 @@ impl AppPaths {
         self.logs_root().join("tts")
     }
 
+    /// `logs/llm/`
+    pub fn llm_logs_root(&self) -> PathBuf {
+        self.logs_root().join("llm")
+    }
+
     /// Creates every directory the subsystem needs.
     pub fn ensure(&self) -> TtsResult<()> {
         for dir in [
@@ -117,6 +122,7 @@ impl AppPaths {
             self.generated_audio_root(),
             self.logs_root(),
             self.tts_logs_root(),
+            self.llm_logs_root(),
             self.runtimes_root(),
             self.engines_root(),
         ] {

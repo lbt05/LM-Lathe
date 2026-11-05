@@ -22,6 +22,7 @@ import {
   type EngineAsset,
   type Model,
   type Route,
+  type Runtime,
   type Status,
 } from "./api";
 
@@ -79,6 +80,7 @@ interface Store {
   engines: EngineAsset[];
   routes: Route[];
   refresh: () => Promise<void>;
+  runtimeOf: (modelId: string) => Runtime | undefined;
 
   inspector: Inspector;
   setInspector: (inspector: Inspector) => void;
@@ -371,6 +373,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => query.removeEventListener("change", apply);
   }, [theme]);
 
+  // The speech models and the language models run in different runtimes,
+  // the interface only knows one list of instances.
+  const runtimeOf = useCallback(
+    (modelId: string) =>
+      [...(status?.runtimes ?? []), ...(status?.llm_runtimes ?? [])].find(
+        (runtime) => runtime.model_id === modelId,
+      ),
+    [status],
+  );
+
   const value = useMemo<Store>(
     () => ({
       view,
@@ -386,6 +398,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       engines,
       routes,
       refresh,
+      runtimeOf,
       inspector,
       setInspector,
       events,
@@ -410,6 +423,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       engines,
       routes,
       refresh,
+      runtimeOf,
       inspector,
       events,
       log,

@@ -21,7 +21,10 @@ use axum::Router;
 use tts_core::error::TtsError;
 use tts_core::registry::TTSModelSpec;
 use tts_core::service::TtsService;
-use tts_core::types::{AudioReference, EngineSpecificParameters, FishDrama3Parameters, MockParameters, Qwen3TtsParameters, Qwen3TtsTaskType, RuntimeState, TTSRequest, TtsFeature};
+use tts_core::types::{
+    AudioReference, EngineSpecificParameters, FishDrama3Parameters, MockParameters, ModelFamily,
+    Qwen3TtsParameters, Qwen3TtsTaskType, RuntimeState, TTSRequest, TtsFeature,
+};
 use tts_core::voice::{NewVoiceProfile, VoiceFilter, VoicePatch};
 
 use dto::*;
@@ -55,6 +58,8 @@ pub const ROUTES: &[RouteInfo] = &[
     RouteInfo { method: "GET", path: "/v1/tts/models", summary: "完整模型目录，含未下载的模型" },
     RouteInfo { method: "GET", path: "/v1/tts/status", summary: "运行时状态与调度器快照" },
     RouteInfo { method: "POST", path: "/v1/audio/speech", summary: "OpenAI 兼容的语音合成" },
+    RouteInfo { method: "POST", path: "/v1/chat/completions", summary: "OpenAI 兼容的对话补全" },
+    RouteInfo { method: "POST", path: "/v1/completions", summary: "OpenAI 兼容的文本补全" },
     RouteInfo { method: "POST", path: "/v1/tts/speak", summary: "语音合成，可带引擎参数" },
     RouteInfo { method: "GET", path: "/v1/tts/voices", summary: "声音库列表" },
     RouteInfo { method: "POST", path: "/v1/tts/voices", summary: "新建声音" },
@@ -99,6 +104,8 @@ pub fn router(service: Arc<TtsService>) -> Router {
         .route("/v1/tts/models", get(list_catalogue))
         .route("/v1/tts/status", get(status))
         .route("/v1/audio/speech", post(speech))
+        .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/completions", post(completions))
         .route("/v1/tts/speak", post(speak))
         .route("/v1/tts/voices", get(list_voices).post(create_voice))
         .route("/v1/tts/voices/design", post(design_voice))
@@ -319,6 +326,11 @@ fn model_dto(
     let runtime = runtimes
         .iter()
         .find(|runtime| runtime.model_id == spec.id);
+    let llm_runtime = state
+        .service
+        .llm
+        .runtime(&spec.id)
+        .filter(|_| spec.family == ModelFamily::Llm);
     ModelDto {
         id: spec.id.clone(),
         name: spec.name.clone(),
@@ -334,6 +346,11 @@ fn model_dto(
             .iter()
             .map(|feature| feature.as_str().to_string())
             .collect(),
+        llm_features: spec
+            .llm_features
+            .iter()
+            .map(|feature| feature.as_str().to_string())
+            .collect(),
         compatible: report.compatible,
         compatibility: report.level.as_str().to_string(),
         notes: report.notes,
@@ -341,14 +358,24 @@ fn model_dto(
         path: state.service.registry.install_path(&spec.id),
         state: runtime
             .map(|runtime| runtime.state.as_str().to_string())
+            .or_else(|| {
+                llm_runtime
+                    .as_ref()
+                    .map(|runtime| runtime.state.as_str().to_string())
+            })
             .unwrap_or_else(|| "unloaded".to_string()),
-        pinned: runtime.map(|runtime| runtime.pinned).unwrap_or(false),
+        pinned: runtime
+            .map(|runtime| runtime.pinned)
+            .or_else(|| llm_runtime.as_ref().map(|runtime| runtime.pinned))
+            .unwrap_or(false),
     }
 }
 
 /// `GET /v1/tts/status`
 async fn status(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
-    Ok(axum::Json(state.service.manager.status()))
+    let mut status = state.service.manager.status();
+    status.llm_runtimes = state.service.llm.runtimes();
+    Ok(axum::Json(status))
 }
 
 /// `POST /v1/audio/speech`
@@ -685,12 +712,23 @@ async fn get_sample(
 }
 
 /// `POST /v1/tts/models/{id}/load`
+///
+/// Starts the model. The language models run in their own runtime, the
+/// speech models in the speech runtime.
 async fn load_model(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    if is_language_model(&state, &id) {
+        let runtime = state.service.llm.load_model(&id).await?;
+        let payload = serde_json::to_value(runtime)
+            .map_err(|err| ApiError(TtsError::Serialization(err.to_string())))?;
+        return Ok(axum::Json(payload));
+    }
     let runtime = state.service.manager.load_model(&id).await?;
-    Ok(axum::Json(runtime))
+    let payload = serde_json::to_value(runtime)
+        .map_err(|err| ApiError(TtsError::Serialization(err.to_string())))?;
+    Ok(axum::Json(payload))
 }
 
 /// `POST /v1/tts/models/{id}/unload`
@@ -698,8 +736,22 @@ async fn unload_model(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    state.service.manager.unload_model(&id).await?;
+    if is_language_model(&state, &id) {
+        state.service.llm.unload_model(&id).await?;
+    } else {
+        state.service.manager.unload_model(&id).await?;
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `true` when the model is a language model.
+fn is_language_model(state: &ApiState, id: &str) -> bool {
+    state
+        .service
+        .registry
+        .resolve(id)
+        .map(|spec| spec.family == ModelFamily::Llm)
+        .unwrap_or(false)
 }
 
 /// `POST /v1/tts/models/{id}/pin`
@@ -831,13 +883,72 @@ async fn model_logs(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let logs = state.service.manager.logs(&id).await?;
+    let logs = if is_language_model(&state, &id) {
+        state.service.llm.logs(&id)
+    } else {
+        state.service.manager.logs(&id).await?
+    };
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
         Body::from(logs),
     )
         .into_response())
+}
+
+/// `POST /v1/chat/completions`
+///
+/// OpenAI compatible chat completion. The request is forwarded to the
+/// server of the language model, which is started when it is not running.
+async fn chat_completions(
+    State(state): State<ApiState>,
+    body: axum::Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiError> {
+    let model = body
+        .0
+        .get("model")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            ApiError(TtsError::InvalidRequest(
+                "the request needs a `model`".to_string(),
+            ))
+        })?
+        .to_string();
+    let spec = resolve_model(&state.service, &model)?;
+    if spec.family != ModelFamily::Llm {
+        return Err(ApiError(TtsError::InvalidRequest(format!(
+            "`{model}` is not a language model"
+        ))));
+    }
+    let answer = state.service.llm.chat(&spec.id, body.0).await?;
+    Ok(axum::Json(answer))
+}
+
+/// `POST /v1/completions`
+///
+/// OpenAI compatible plain completion.
+async fn completions(
+    State(state): State<ApiState>,
+    body: axum::Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiError> {
+    let model = body
+        .0
+        .get("model")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            ApiError(TtsError::InvalidRequest(
+                "the request needs a `model`".to_string(),
+            ))
+        })?
+        .to_string();
+    let spec = resolve_model(&state.service, &model)?;
+    if spec.family != ModelFamily::Llm {
+        return Err(ApiError(TtsError::InvalidRequest(format!(
+            "`{model}` is not a language model"
+        ))));
+    }
+    let answer = state.service.llm.completion(&spec.id, body.0).await?;
+    Ok(axum::Json(answer))
 }
 
 /// `GET /v1/audio/{file}`
@@ -962,6 +1073,9 @@ fn parameters_for(
         tts_core::types::ModelFamily::Mock => {
             EngineSpecificParameters::Mock(MockParameters::default())
         }
+        tts_core::types::ModelFamily::Llm => {
+            EngineSpecificParameters::Mock(MockParameters::default())
+        }
     }
 }
 
@@ -974,6 +1088,9 @@ fn default_parameters(spec: &TTSModelSpec) -> EngineSpecificParameters {
             EngineSpecificParameters::FishDrama3(FishDrama3Parameters::default())
         }
         tts_core::types::ModelFamily::Mock => {
+            EngineSpecificParameters::Mock(MockParameters::default())
+        }
+        tts_core::types::ModelFamily::Llm => {
             EngineSpecificParameters::Mock(MockParameters::default())
         }
     }

@@ -17,6 +17,7 @@ export interface Model {
   size_bytes: number;
   estimated_memory_bytes: number;
   features: string[];
+  llm_features?: string[];
   compatible: boolean;
   compatibility: string;
   notes: string[];
@@ -92,6 +93,7 @@ export interface Runtime {
 
 export interface Status {
   runtimes: Runtime[];
+  llm_runtimes?: Runtime[];
   active_model: string | null;
   scheduler: Scheduler;
   hardware: Hardware;

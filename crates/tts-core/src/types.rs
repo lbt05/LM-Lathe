@@ -14,6 +14,8 @@ pub enum ModelFamily {
     Qwen3Tts,
     /// Fish Audio Drama 3.
     FishDrama3,
+    /// A language model served by llama.cpp.
+    Llm,
     /// Synthetic model used for tests and for running the UI without a GPU.
     Mock,
 }
@@ -23,6 +25,7 @@ impl ModelFamily {
         match self {
             ModelFamily::Qwen3Tts => "qwen3-tts",
             ModelFamily::FishDrama3 => "fish-drama-3",
+            ModelFamily::Llm => "llm",
             ModelFamily::Mock => "mock",
         }
     }
@@ -90,6 +93,8 @@ pub enum EngineMode {
     #[default]
     SglangOmni,
     MlxNative,
+    /// A GGUF checkpoint served by llama.cpp.
+    LlamaCpp,
     Mock,
 }
 
@@ -98,7 +103,39 @@ impl EngineMode {
         match self {
             EngineMode::SglangOmni => "sglang_omni",
             EngineMode::MlxNative => "mlx_native",
+            EngineMode::LlamaCpp => "llama_cpp",
             EngineMode::Mock => "mock",
+        }
+    }
+}
+
+/// A capability a language model may provide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmFeature {
+    /// Chat completions.
+    Chat,
+    /// Plain text completions.
+    Completion,
+    /// Tool / function calling.
+    ToolUse,
+    /// Image input.
+    Vision,
+    /// Reasoning traces.
+    Reasoning,
+    /// Long context window.
+    LongContext,
+}
+
+impl LlmFeature {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LlmFeature::Chat => "chat",
+            LlmFeature::Completion => "completion",
+            LlmFeature::ToolUse => "tool_use",
+            LlmFeature::Vision => "vision",
+            LlmFeature::Reasoning => "reasoning",
+            LlmFeature::LongContext => "long_context",
         }
     }
 }

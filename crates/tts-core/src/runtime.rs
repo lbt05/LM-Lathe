@@ -70,6 +70,9 @@ pub struct SynthesisResult {
 pub struct RuntimeStatus {
     /// State of every known model.
     pub runtimes: Vec<TTSRuntime>,
+    /// State of every language model.
+    #[serde(default)]
+    pub llm_runtimes: Vec<crate::llm::LlmRuntime>,
     /// Model that currently occupies the engine.
     pub active_model: Option<String>,
     /// State of the global scheduler.
@@ -684,6 +687,7 @@ impl Inner {
     fn status(&self) -> RuntimeStatus {
         RuntimeStatus {
             runtimes: self.runtimes(),
+            llm_runtimes: Vec::new(),
             active_model: self.active_runtime().map(|active| active.model_id),
             scheduler: self.scheduler.snapshot(),
             hardware: self.hardware.clone(),

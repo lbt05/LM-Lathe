@@ -54,12 +54,31 @@ pub enum Command {
     },
     /// Synthesises speech.
     Speak(SpeakArgs),
-    /// Plays an audio file with the platform player.
+    /// Asks a language model a question.
+    Chat(ChatArgs),
+/// Plays an audio file with the platform player.
     Play(PlayArgs),
     /// Shows the state of the subsystem.
     Status,
     /// Shows the hardware and the compatibility of every model.
     Doctor,
+}
+
+/// Arguments of the `chat` command.
+#[derive(Debug, Args)]
+pub struct ChatArgs {
+    /// The language model that answers.
+    #[arg(long)]
+    pub model: String,
+    /// The question.
+    #[arg(long, short)]
+    pub prompt: String,
+    /// The system prompt of the conversation.
+    #[arg(long)]
+    pub system: Option<String>,
+    /// The number of tokens the answer may use.
+    #[arg(long, default_value_t = 1024)]
+    pub max_tokens: u32,
 }
 
 /// Arguments of the `serve` command.
@@ -227,6 +246,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Voices { command } => voices(service.clone(), command).await,
         Command::Engines { command } => engines(service.clone(), command).await,
         Command::Speak(args) => speak(service.clone(), args).await,
+        Command::Chat(args) => chat(service.clone(), args).await,
         Command::Play(args) => play(service.clone(), args),
         Command::Status => status(service.clone()),
         Command::Doctor => doctor(service.clone()),
@@ -679,6 +699,9 @@ async fn render_preview(
         tts_core::types::ModelFamily::Mock => {
             EngineSpecificParameters::Mock(MockParameters::default())
         }
+        tts_core::types::ModelFamily::Llm => {
+            return Err(anyhow::anyhow!("`{}` is a language model", spec.id))
+        }
     };
     let request = TTSRequest {
         model_id: spec.id.clone(),
@@ -718,6 +741,9 @@ async fn speak(service: std::sync::Arc<TtsService>, args: SpeakArgs) -> Result<(
         tts_core::types::ModelFamily::Mock => {
             EngineSpecificParameters::Mock(MockParameters::default())
         }
+        tts_core::types::ModelFamily::Llm => {
+            return Err(anyhow::anyhow!("`{}` is a language model", spec.id))
+        }
     };
     let request = TTSRequest {
         model_id: spec.id.clone(),
@@ -742,6 +768,58 @@ async fn speak(service: std::sync::Arc<TtsService>, args: SpeakArgs) -> Result<(
                 std::io::Write::write_all(&mut std::io::stdout(), &result.output.data)?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Asks a language model a question.
+async fn chat(service: std::sync::Arc<TtsService>, args: ChatArgs) -> Result<()> {
+    let spec = service
+        .registry
+        .resolve(&args.model)
+        .with_context(|| format!("unknown model `{}`", args.model))?;
+    if spec.family != tts_core::types::ModelFamily::Llm {
+        return Err(anyhow::anyhow!(
+            "`{}` is not a language model, use `speak` for the speech models",
+            spec.id
+        ));
+    }
+
+    let mut messages = Vec::new();
+    if let Some(system) = args.system {
+        messages.push(serde_json::json!({"role": "system", "content": system}));
+    }
+    messages.push(serde_json::json!({"role": "user", "content": args.prompt}));
+
+    let body = serde_json::json!({
+        "model": spec.id,
+        "messages": messages,
+        "max_tokens": args.max_tokens,
+    });
+    let answer = service.llm.chat(&spec.id, body).await?;
+    let content = answer
+        .get("choices")
+        .and_then(|choices| choices.get(0))
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let reasoning = answer
+        .get("choices")
+        .and_then(|choices| choices.get(0))
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("reasoning_content"))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if !reasoning.is_empty() {
+        println!("{reasoning}");
+    }
+    if content.trim().is_empty() {
+        // A thinking model spends the budget on its thoughts, the answer then
+        // needs a larger `--max-tokens`.
+        println!("（模型仍在思考，用 --max-tokens 给它更多预算）");
+    } else {
+        println!("{content}");
     }
     Ok(())
 }

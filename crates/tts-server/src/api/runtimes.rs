@@ -10,6 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 
+use tts_core::types::ModelFamily;
 use tts_core::engine_assets::{
     engine_definition, probe_engine, EngineAsset, EngineHealth, EngineInstallProgress,
     EngineVersion,
@@ -135,7 +136,16 @@ pub async fn health(
             .service
             .registry
             .install_path(&spec.id)
-            .map(|path| (path, spec.hf_repo.clone()))
+            .map(|path| {
+                // A language model is a single GGUF file, the server needs the
+                // file and not the directory of the checkpoint.
+                let path = if spec.family == ModelFamily::Llm {
+                    tts_core::gguf_checkpoint(&path).unwrap_or(path)
+                } else {
+                    path
+                };
+                (path, spec.hf_repo.clone())
+            })
     });
 
     // The program depends on the model: the Apple path of the subsystem is

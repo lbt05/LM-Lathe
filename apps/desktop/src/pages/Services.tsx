@@ -18,10 +18,16 @@ import {
 /** The HTTP surface the local service exposes. */
 export default function Services() {
   const store = useStore();
-  const runtimes = store.status?.runtimes ?? [];
+  // The language models run in their own runtime, both kinds of instances
+  // belong to the same list.
+  const runtimes = [
+    ...(store.status?.runtimes ?? []),
+    ...(store.status?.llm_runtimes ?? []),
+  ];
   const running = runtimes.filter((runtime) => runtime.state === "running");
-  // The route table comes from the gateway itself, so it cannot drift away
-  // from the routes that are really served.
+  // The route count comes from the gateway itself, so it cannot drift away
+  // from the routes that are really served. The paths themselves stay in the
+  // API: the sheet is a monitor, not an endpoint browser.
   const routes = store.routes;
   const modelOf = (id: string) =>
     store.models.find((model) => model.id === id)?.name ?? id;
@@ -61,35 +67,6 @@ export default function Services() {
             k="AUTH"
             v={<Pending label="网关鉴权未接入" />}
           />
-        </div>
-        <div className="sheet__body" style={{ paddingTop: 0 }}>
-          {routes.length ? (
-            <div className="tablewrap">
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th>方法</th>
-                    <th>路径</th>
-                    <th>说明</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {routes.map((route) => (
-                    <tr key={`${route.method} ${route.path}`}>
-                      <td className="mono">{route.method}</td>
-                      <td className="mono">{route.path}</td>
-                      <td>{route.summary}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <Empty
-              title="还没有路由信息"
-              text={store.base ? "网关没有报告路由表。" : "尚未连接本地服务"}
-            />
-          )}
         </div>
       </section>
 
@@ -142,7 +119,15 @@ export default function Services() {
                   >
                     <td>
                       <span className="cellrow">
-                        <TypeMark type="TTS" />
+                        <TypeMark
+                          type={
+                            store.models.find(
+                              (model) => model.id === runtime.model_id,
+                            )?.family === "llm"
+                              ? "LLM"
+                              : "TTS"
+                          }
+                        />
                         <span className="cellstack">
                           <span className="name">
                             {modelOf(runtime.model_id)}

@@ -15,6 +15,15 @@ import {
 } from "../ui";
 
 /** The Chinese name of a capability. */
+const LLM_FEATURE_LABELS: Record<string, string> = {
+  chat: "对话",
+  completion: "文本补全",
+  tool_use: "工具调用",
+  vision: "图像输入",
+  reasoning: "思维链",
+  long_context: "长上下文",
+};
+
 const FEATURE_LABELS: Record<string, string> = {
   text_to_speech: "语音合成",
   voice_design: "声音设计",
@@ -35,8 +44,19 @@ function featureLabel(feature: string): string {
 
 /** The purpose badge of a model. */
 function purposeOf(model: Model): string {
-  if (model.family === "mock") return "TTS";
+  if (model.family === "llm") return "LLM";
   return "TTS";
+}
+
+/** The capabilities of a model, the speech ones and the language ones. */
+function capabilitiesOf(model: Model): string[] {
+  const speech = model.features
+    .filter((feature) => feature !== "text_to_speech")
+    .map(featureLabel);
+  const language = (model.llm_features ?? []).map(
+    (feature) => LLM_FEATURE_LABELS[feature] ?? feature,
+  );
+  return [...speech, ...language];
 }
 
 /** `safetensors` → `Safetensors`. */
@@ -231,9 +251,7 @@ export default function Models({
 
   const toggleLoad = useCallback(
     async (model: Model) => {
-      const runtime = store.status?.runtimes.find(
-        (item) => item.model_id === model.id,
-      );
+      const runtime = store.runtimeOf(model.id);
       try {
         if (runtime?.state === "running") {
           await api.unloadModel(model.id);
@@ -423,10 +441,7 @@ export default function Models({
                             <span className="name">{model.name}</span>
                           </span>
                           <span className="sub">
-                            {model.features
-                              .filter((feature) => feature !== "text_to_speech")
-                              .map(featureLabel)
-                              .join(" · ")}
+                            {capabilitiesOf(model).join(" · ")}
                           </span>
                         </span>
                       </td>
@@ -515,9 +530,7 @@ export default function Models({
                 </thead>
                 <tbody>
                   {installedList.map((model) => {
-                    const runtime = store.status?.runtimes.find(
-                      (item) => item.model_id === model.id,
-                    );
+                    const runtime = store.runtimeOf(model.id);
                     const running = runtime?.state === "running";
                     return (
                       <tr
@@ -664,8 +677,8 @@ export function ModelInspector({ id, tab }: { id: string; tab: string }) {
   const [confirm, setConfirm] = useState(false);
 
   const runtime = useMemo(
-    () => store.status?.runtimes.find((item) => item.model_id === id),
-    [store.status, id],
+    () => store.runtimeOf(id),
+    [store, id],
   );
 
   useEffect(() => {
@@ -847,10 +860,7 @@ export function ModelInspector({ id, tab }: { id: string; tab: string }) {
             v={formatBytes(model.estimated_memory_bytes)}
             mono
           />
-          <Kv
-            k="能力"
-            v={model.features.map(featureLabel).join(" / ")}
-          />
+          <Kv k="能力" v={capabilitiesOf(model).join(" / ")} />
         </div>
         {model.compatibility ? (
           <Note title="兼容性">
@@ -873,7 +883,7 @@ export function ModelInspector({ id, tab }: { id: string; tab: string }) {
           <Eyebrow>MODEL · {purposeOf(model)}</Eyebrow>
           <span className="insp__title">{model.name}</span>
           <span className="insp__sub">
-            {model.features.map(featureLabel).join(" / ")}
+            {capabilitiesOf(model).join(" / ")}
           </span>
         </span>
         <button

@@ -27,6 +27,8 @@ fn second_mock_model() -> TTSModelSpec {
         size_bytes: 0,
         estimated_memory_bytes: 64 * 1024 * 1024,
         features: vec![TtsFeature::TextToSpeech],
+        llm_features: vec![],
+        files: vec![],
         hardware: Default::default(),
         mode: EngineMode::Mock,
         default_ttl_secs: None,
