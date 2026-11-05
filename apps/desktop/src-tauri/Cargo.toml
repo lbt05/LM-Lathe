@@ -1,9 +1,9 @@
 [package]
-name = "local-ai-manager-desktop"
+name = "lm-lathe"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
-description = "Desktop shell of the local AI manager, TTS subsystem."
+description = "Desktop shell of LM Lathe, the local AI model manager."
 license = "MIT"
 
 # The desktop application has its own dependency tree and is not part of the

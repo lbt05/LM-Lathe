@@ -74,7 +74,7 @@ function Shell() {
           <i />
         </span>
         <span className="titlebar__name" data-tauri-drag-region>
-          LM Lathe
+          LM-Lathe
         </span>
         <span className="titlebar__ctx" data-tauri-drag-region>
           {store.base ?? "未连接"}
