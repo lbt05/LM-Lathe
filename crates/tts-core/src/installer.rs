@@ -128,6 +128,8 @@ pub struct ModelInstaller {
     llm_root: PathBuf,
     endpoint: String,
     token: Option<String>,
+    /// How many files of a repository are fetched at the same time.
+    concurrency: std::sync::atomic::AtomicUsize,
 }
 
 impl ModelInstaller {
@@ -146,7 +148,28 @@ impl ModelInstaller {
             token: std::env::var("HF_TOKEN")
                 .ok()
                 .filter(|token| !token.trim().is_empty()),
+            // One file at a time; the user can raise the number.
+            concurrency: std::sync::atomic::AtomicUsize::new(1),
         }
+    }
+
+    /// How many files of a repository are fetched at the same time.
+    pub fn concurrency(&self) -> usize {
+        self.concurrency
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .max(1)
+    }
+
+    /// Sets how many files of a repository are fetched at the same time.
+    ///
+    /// The hub serves a few files at the same time without a problem, but
+    /// too many of them slow the download down instead of making it
+    /// faster.
+    pub fn set_concurrency(&self, value: usize) -> usize {
+        let value = value.clamp(1, 8);
+        self.concurrency
+            .store(value, std::sync::atomic::Ordering::Relaxed);
+        value
     }
 
     /// Sets the directory the language model checkpoints live in.
@@ -247,9 +270,13 @@ impl ModelInstaller {
             });
         }
 
-        // The bytes that are already on the disk.
-        let mut written: u64 = 0;
+        // The bytes that are already on the disk. The counter is shared by
+        // the files that are fetched at the same time, so the progress is
+        // the sum of all of them.
+        let counter = std::sync::atomic::AtomicU64::new(0);
 
+        // The files that are already on the disk are counted first.
+        let mut pending: Vec<(RepoFile, PathBuf)> = Vec::new();
         for file in files {
             let destination = root.join(&file.path);
             if let Some(size) = file.size {
@@ -258,11 +285,11 @@ impl ModelInstaller {
                     .unwrap_or(false);
                 if complete {
                     report.skipped.push(file.path.clone());
-                    written += size;
+                    counter.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
                     if let Some(tracker) = tracker {
                         tracker.update(&spec.id, |progress| {
                             progress.files_done += 1;
-                            progress.bytes = written;
+                            progress.bytes = counter.load(std::sync::atomic::Ordering::Relaxed);
                         });
                     }
                     continue;
@@ -276,25 +303,33 @@ impl ModelInstaller {
                 })?;
             }
 
-            let fetched = self
-                .download_file(spec, &file, &destination, tracker, written)
-                .await?;
+            pending.push((file, destination));
+        }
 
-            written += fetched;
-            report.bytes += fetched;
-            report.downloaded.push(file.path.clone());
-            tracing::info!(
-                model = %spec.id,
-                file = %file.path,
-                bytes = fetched,
-                "downloaded"
-            );
-
-            if let Some(tracker) = tracker {
-                tracker.update(&spec.id, |progress| {
-                    progress.files_done += 1;
-                    progress.bytes = written;
-                });
+        // The files are fetched in groups, so that the number of the open
+        // connections stays where the user put it.
+        let concurrency = self.concurrency();
+        for group in pending.chunks(concurrency) {
+            let downloads = group.iter().map(|(file, destination)| {
+                self.download_file(spec, file, destination, tracker, &counter)
+            });
+            let results = futures::future::join_all(downloads).await;
+            for ((file, _), fetched) in group.iter().zip(results) {
+                let fetched = fetched?;
+                report.bytes += fetched;
+                report.downloaded.push(file.path.clone());
+                tracing::info!(
+                    model = %spec.id,
+                    file = %file.path,
+                    bytes = fetched,
+                    "downloaded"
+                );
+                if let Some(tracker) = tracker {
+                    tracker.update(&spec.id, |progress| {
+                        progress.files_done += 1;
+                        progress.bytes = counter.load(std::sync::atomic::Ordering::Relaxed);
+                    });
+                }
             }
         }
 
@@ -312,7 +347,7 @@ impl ModelInstaller {
         file: &RepoFile,
         destination: &Path,
         tracker: Option<&InstallTracker>,
-        written: u64,
+        counter: &std::sync::atomic::AtomicU64,
     ) -> TtsResult<u64> {
         let part = part_path(destination);
 
@@ -371,6 +406,11 @@ impl ModelInstaller {
         .map_err(|source| TtsError::io(&part, source))?;
 
         let mut received = resume_from;
+        if resume_from > 0 {
+            // The bytes of the interrupted download are already on the disk,
+            // they belong to the progress of the file.
+            counter.fetch_add(resume_from, std::sync::atomic::Ordering::Relaxed);
+        }
         while let Some(chunk) = response.chunk().await.map_err(|err| {
             TtsError::Engine(format!("failed to download `{}`: {err}", file.path))
         })? {
@@ -378,9 +418,11 @@ impl ModelInstaller {
                 .await
                 .map_err(|source| TtsError::io(&part, source))?;
             received += chunk.len() as u64;
+            counter.fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
             if let Some(tracker) = tracker {
-                let total = written + received;
-                tracker.update(&spec.id, |progress| progress.bytes = total);
+                tracker.update(&spec.id, |progress| {
+                    progress.bytes = counter.load(std::sync::atomic::Ordering::Relaxed);
+                });
             }
         }
 

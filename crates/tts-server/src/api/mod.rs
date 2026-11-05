@@ -49,6 +49,19 @@ pub struct DiscoverInstallRequest {
     pub repo: String,
 }
 
+/// The body of the setting of the download concurrency.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DownloadConcurrencyRequest {
+    /// How many files of a repository are fetched at the same time.
+    #[serde(default = "one")]
+    pub concurrency: u8,
+}
+
+/// The number of the files that are fetched at the same time.
+fn one() -> u8 {
+    1
+}
+
 /// Shared state of the API.
 #[derive(Clone)]
 pub struct ApiState {
@@ -56,6 +69,8 @@ pub struct ApiState {
     pub service: Arc<TtsService>,
     /// The client of the Hugging Face Hub.
     pub hub: Arc<HubClient>,
+    /// The address the service listens on.
+    pub bind: String,
 }
 
 /// One route of the local gateway.
@@ -76,6 +91,8 @@ pub struct RouteInfo {
 pub const ROUTES: &[RouteInfo] = &[
     RouteInfo { method: "GET", path: "/health", summary: "服务健康状态与可用显存" },
     RouteInfo { method: "GET", path: "/v1/routes", summary: "网关路由表" },
+    RouteInfo { method: "GET", path: "/v1/paths", summary: "应用使用的目录与下载设置" },
+    RouteInfo { method: "POST", path: "/v1/settings/download-concurrency", summary: "设置同时下载的文件数" },
     RouteInfo { method: "GET", path: "/v1/models", summary: "可以服务的模型（已下载且机器能跑）" },
     RouteInfo { method: "GET", path: "/v1/tts/models", summary: "完整模型目录，含未下载的模型" },
     RouteInfo { method: "GET", path: "/v1/tts/status", summary: "运行时状态与调度器快照" },
@@ -119,14 +136,17 @@ async fn list_routes() -> impl IntoResponse {
 }
 
 /// Builds the router.
-pub fn router(service: Arc<TtsService>) -> Router {
+pub fn router(service: Arc<TtsService>, bind: &str) -> Router {
     let state = ApiState {
         service,
         hub: Arc::new(HubClient::new()),
+        bind: bind.to_string(),
     };
     Router::new()
         .route("/health", get(health))
         .route("/v1/routes", get(list_routes))
+        .route("/v1/paths", get(paths))
+        .route("/v1/settings/download-concurrency", post(set_download_concurrency))
         .route("/v1/models", get(list_models))
         .route("/v1/tts/models", get(list_catalogue))
         .route("/v1/tts/status", get(status))
@@ -282,7 +302,41 @@ async fn health(State(state): State<ApiState>) -> impl IntoResponse {
         "active_model": status.active_model,
         "available_bytes": status.scheduler.available_bytes,
         "build": build_fingerprint(),
+        "bind": state.bind,
     }))
+}
+
+/// `GET /v1/paths`
+///
+/// The directories of the application and the settings that belong to them.
+async fn paths(State(state): State<ApiState>) -> impl IntoResponse {
+    let paths = &state.service.paths;
+    let status = state.service.manager.status();
+    axum::Json(dto::PathsDto {
+        root: paths.root().display().to_string(),
+        tts_models_root: paths.tts_models_root().display().to_string(),
+        llm_models_root: paths.llm_models_root().display().to_string(),
+        runtimes_root: paths.runtimes_root().display().to_string(),
+        engines_root: paths.engines_root().display().to_string(),
+        voices_root: paths.voices_root().display().to_string(),
+        logs_root: paths.logs_root().display().to_string(),
+        download_concurrency: state.service.installer.concurrency(),
+        available_bytes: status.scheduler.available_bytes,
+    })
+}
+
+/// `POST /v1/settings/download-concurrency`
+///
+/// Sets how many files of a repository are fetched at the same time.
+async fn set_download_concurrency(
+    State(state): State<ApiState>,
+    body: Option<Json<DownloadConcurrencyRequest>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let request = body.map(|Json(body)| body).unwrap_or(DownloadConcurrencyRequest {
+        concurrency: 1,
+    });
+    let value = state.service.installer.set_concurrency(request.concurrency as usize);
+    Ok(axum::Json(serde_json::json!({ "concurrency": value })))
 }
 
 /// A fingerprint of the running binary.

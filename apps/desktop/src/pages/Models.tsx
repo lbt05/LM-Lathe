@@ -779,14 +779,27 @@ export function ModelInspector({ id, tab }: { id: string; tab: string }) {
   );
 
   useEffect(() => {
-    if (tab !== "logs" || logs !== null) return;
-    // A model that could not be loaded has no runtime, but the engine wrote
-    // the reason of the failure into its log.
-    void api
-      .modelLogs(id)
-      .then(setLogs)
-      .catch(() => setLogs("无法读取日志"));
-  }, [tab, logs, runtime]);
+    if (tab !== "logs") return;
+    // The engine writes its log while it runs, so the panel reads it again
+    // and again instead of showing the state of the first second.
+    let alive = true;
+    const read = () => {
+      void api
+        .modelLogs(id)
+        .then((text) => {
+          if (alive) setLogs(text);
+        })
+        .catch(() => {
+          if (alive) setLogs("无法读取日志");
+        });
+    };
+    read();
+    const timer = window.setInterval(read, 3000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [tab, id]);
 
   const toggleLoad = useCallback(
     async (model: Model) => {

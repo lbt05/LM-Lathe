@@ -157,10 +157,10 @@ fn build_fingerprint(path: &std::path::Path) -> String {
     format!("{}:{}", path.display(), modified)
 }
 
-/// Asks a running backend for its build fingerprint.
+/// Asks a running backend for its build fingerprint and its address.
 ///
 /// The request is a plain HTTP/1.1 GET, the shell has no HTTP client.
-fn probe_build(port: u16) -> Option<String> {
+fn probe_health(port: u16) -> Option<(String, String)> {
     use std::io::{Read, Write};
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
@@ -170,8 +170,13 @@ fn probe_build(port: u16) -> Option<String> {
         .ok()?;
     let mut answer = String::new();
     stream.read_to_string(&mut answer).ok()?;
-    let start = answer.find("\"build\"")?;
-    let rest = &answer[start + "\"build\"".len()..];
+    Some((field(&answer, "build")?, field(&answer, "bind").unwrap_or_default()))
+}
+
+/// Reads one string field of a JSON answer.
+fn field(answer: &str, name: &str) -> Option<String> {
+    let start = answer.find(&format!("\"{name}\""))?;
+    let rest = &answer[start + name.len() + 2..];
     let start = rest.find(':')? + 1;
     let rest = &rest[start..];
     let start = rest.find('"')? + 1;
@@ -182,9 +187,10 @@ fn probe_build(port: u16) -> Option<String> {
 /// Picks the port for the backend.
 ///
 /// The preferred port is used when it is free. When it is taken, the running
-/// server is asked for its build: if it is the build the application expects,
-/// the application reuses it, otherwise the next port is tried.
-fn select_port(preferred: u16, fingerprint: &str) -> Result<PortChoice, String> {
+/// server is asked for its build: if it is the build the application expects
+/// and it listens on the address the user chose, the application reuses it,
+/// otherwise the next port is tried.
+fn select_port(preferred: u16, fingerprint: &str, bind: &str) -> Result<PortChoice, String> {
     for offset in 0..PORT_RANGE {
         let port = preferred.saturating_add(offset);
         if port == 0 {
@@ -196,8 +202,8 @@ fn select_port(preferred: u16, fingerprint: &str) -> Result<PortChoice, String> 
                 return Ok(PortChoice::Start(port));
             }
             Err(_) => {
-                if let Some(build) = probe_build(port) {
-                    if build == fingerprint {
+                if let Some((build, address)) = probe_health(port) {
+                    if build == fingerprint && (bind == "0.0.0.0" || address == bind) {
                         return Ok(PortChoice::Reuse(port));
                     }
                 }
@@ -231,8 +237,16 @@ fn data_directory() -> Option<PathBuf> {
 }
 
 /// Starts the backend and returns its base URL.
+///
+/// The address the backend listens on comes from the settings of the
+/// application: `127.0.0.1` keeps the service inside the machine,
+/// `0.0.0.0` lets the other machines of the network reach it.
 #[tauri::command]
-pub async fn start_server(app: AppHandle, state: State<'_, ServerState>) -> Result<String, String> {
+pub async fn start_server(
+    app: AppHandle,
+    state: State<'_, ServerState>,
+    host: Option<String>,
+) -> Result<String, String> {
     // Only one backend may start at a time, the window can ask twice.
     let _startup = state.startup.lock().unwrap();
 
@@ -241,9 +255,14 @@ pub async fn start_server(app: AppHandle, state: State<'_, ServerState>) -> Resu
         return Ok(base);
     }
 
+    let bind = match host.as_deref() {
+        Some("0.0.0.0") => "0.0.0.0".to_string(),
+        _ => "127.0.0.1".to_string(),
+    };
+
     let binary = server_binary(&app)?;
     let fingerprint = build_fingerprint(&binary);
-    let (port, reuse) = match select_port(preferred_port(), &fingerprint)? {
+    let (port, reuse) = match select_port(preferred_port(), &fingerprint, &bind)? {
         PortChoice::Start(port) => (port, false),
         PortChoice::Reuse(port) => (port, true),
     };
@@ -262,7 +281,7 @@ pub async fn start_server(app: AppHandle, state: State<'_, ServerState>) -> Resu
     command
         .arg("serve")
         .arg("--host")
-        .arg("127.0.0.1")
+        .arg(&bind)
         .arg("--port")
         .arg(port.to_string())
         .stdin(Stdio::piped());

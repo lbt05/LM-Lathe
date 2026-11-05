@@ -21,6 +21,7 @@ import {
   setBaseUrl,
   type EngineAsset,
   type Model,
+  type Paths,
   type Route,
   type Runtime,
   type Status,
@@ -64,6 +65,9 @@ export interface Toast {
 /** The theme preference. */
 export type Theme = "system" | "light" | "dark";
 
+/** The address the local service listens on. */
+export type BindAddress = "127.0.0.1" | "0.0.0.0";
+
 interface Store {
   view: View;
   setView: (view: View) => void;
@@ -73,7 +77,16 @@ interface Store {
   starting: boolean;
   manualUrl: string;
   setManualUrl: (url: string) => void;
-  connect: () => Promise<void>;
+  /** The address the local service listens on. */
+  bind: BindAddress;
+  setBind: (bind: BindAddress) => void;
+  /** Changes the address and restarts the local service. */
+  applyBind: (bind: BindAddress) => Promise<void>;
+  connect: (wanted?: BindAddress) => Promise<void>;
+
+  /** The directories of the local service and its download settings. */
+  paths: Paths | null;
+  setDownloadConcurrency: (value: number) => Promise<void>;
 
   models: Model[];
   status: Status | null;
@@ -110,6 +123,7 @@ function inTauri() {
 
 const THEME_KEY = "lmlathe.theme";
 const BACKEND_KEY = "lmlathe.backend";
+const BIND_KEY = "lmlathe.bind";
 
 const VIEWS: View[] = ["models", "runtime", "services", "settings"];
 
@@ -134,6 +148,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(BACKEND_KEY, url);
   }, []);
   const [models, setModels] = useState<Model[]>([]);
+  const [paths, setPaths] = useState<Paths | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [engines, setEngines] = useState<EngineAsset[]>([]);
   const [routes, setRoutes] = useState<Route[]>([]);
@@ -144,6 +159,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(
     () => (localStorage.getItem(THEME_KEY) as Theme | null) ?? "system",
   );
+  // The address the service listens on. It survives a reload, like the
+  // other preferences.
+  const [bind, setBindState] = useState<BindAddress>(
+    () => (localStorage.getItem(BIND_KEY) as BindAddress | null) ?? "127.0.0.1",
+  );
+  const setBind = useCallback((next: BindAddress) => {
+    setBindState(next);
+    localStorage.setItem(BIND_KEY, next);
+  }, []);
 
   const toastId = useRef(0);
 
@@ -180,61 +204,105 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextModels, nextStatus, nextEngines, nextRoutes] = await Promise.all([
-        api.models(),
-        api.status(),
-        api.engines().catch(() => []),
-        api.routes().catch(() => []),
-      ]);
+      const [nextModels, nextStatus, nextEngines, nextRoutes, nextPaths] =
+        await Promise.all([
+          api.models(),
+          api.status(),
+          api.engines().catch(() => []),
+          api.routes().catch(() => []),
+          api.paths().catch(() => null),
+        ]);
       setModels(nextModels);
       setStatus(nextStatus);
       setEngines(nextEngines);
       setRoutes(nextRoutes);
+      setPaths(nextPaths);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
-  const connect = useCallback(async () => {
-    setStarting(true);
-    setError(null);
-    try {
-      let url: string;
-      if (inTauri()) {
-        url = await invoke<string>("start_server");
-      } else {
-        url = manualUrl;
-      }
-      setBaseUrl(url);
-
-      // Wait for the server to accept requests.
-      const deadline = Date.now() + 30_000;
-      for (;;) {
-        try {
-          await api.health();
-          break;
-        } catch (err) {
-          if (Date.now() > deadline) throw err;
-          await new Promise((resolve) => window.setTimeout(resolve, 250));
+  const connect = useCallback(
+    async (wanted?: BindAddress) => {
+      setStarting(true);
+      setError(null);
+      try {
+        let url: string;
+        if (inTauri()) {
+          url = await invoke<string>("start_server", { host: wanted ?? bind });
+        } else {
+          url = manualUrl;
         }
-      }
+        setBaseUrl(url);
 
-      setBase(url);
-      const [nextModels, nextStatus] = await Promise.all([
-        api.models(),
-        api.status(),
-      ]);
-      setModels(nextModels);
-      setStatus(nextStatus);
-      setEngines(await api.engines().catch(() => []));
-      setRoutes(await api.routes().catch(() => []));
-      log("ok", `已连接本地服务 ${url}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setStarting(false);
-    }
-  }, [manualUrl, log]);
+        // Wait for the server to accept requests.
+        const deadline = Date.now() + 30_000;
+        for (;;) {
+          try {
+            await api.health();
+            break;
+          } catch (err) {
+            if (Date.now() > deadline) throw err;
+            await new Promise((resolve) => window.setTimeout(resolve, 250));
+          }
+        }
+
+        setBase(url);
+        const [nextModels, nextStatus] = await Promise.all([
+          api.models(),
+          api.status(),
+        ]);
+        setModels(nextModels);
+        setStatus(nextStatus);
+        setEngines(await api.engines().catch(() => []));
+        setRoutes(await api.routes().catch(() => []));
+        setPaths(await api.paths().catch(() => null));
+        log("ok", `已连接本地服务 ${url}`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setStarting(false);
+      }
+    },
+    [manualUrl, bind, log],
+  );
+
+  // The address the service listens on belongs to the service, so the
+  // service is restarted when it changes.
+  const applyBind = useCallback(
+    async (next: BindAddress) => {
+      setBind(next);
+      if (!inTauri()) {
+        notify("浏览器模式下的监听地址由启动后端的人决定。");
+        return;
+      }
+      try {
+        await invoke("stop_server");
+      } catch (err) {
+        // The service was not running; it starts right away.
+      }
+      setBase(null);
+      await connect(next);
+    },
+    [setBind, connect, notify],
+  );
+
+  // The number of the files that are fetched at the same time belongs to
+  // the service, so the change is sent there.
+  const setDownloadConcurrency = useCallback(
+    async (value: number) => {
+      try {
+        const answer = await api.setDownloadConcurrency(value);
+        setPaths((current) =>
+          current ? { ...current, download_concurrency: answer.concurrency } : current,
+        );
+        log("ok", `同时下载的文件数改为 ${answer.concurrency}`);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : String(err), "bad");
+      }
+    },
+    [log, notify],
+  );
 
   useEffect(() => {
     void connect();
@@ -408,7 +476,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       starting,
       manualUrl,
       setManualUrl,
+      bind,
+      setBind,
+      applyBind,
       connect,
+      paths,
+      setDownloadConcurrency,
       models,
       status,
       engines,
@@ -435,6 +508,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       starting,
       manualUrl,
       connect,
+      bind,
+      applyBind,
+      setDownloadConcurrency,
       models,
       status,
       engines,

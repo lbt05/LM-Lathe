@@ -105,6 +105,19 @@ export interface Route {
   summary: string;
 }
 
+/** The directories of the local service and its download settings. */
+export interface Paths {
+  root: string;
+  tts_models_root: string;
+  llm_models_root: string;
+  runtimes_root: string;
+  engines_root: string;
+  voices_root: string;
+  logs_root: string;
+  download_concurrency: number;
+  available_bytes: number;
+}
+
 /** A model of the Hugging Face Hub that the runtime can serve. */
 export interface DiscoveredModel {
   id: string;
@@ -294,6 +307,14 @@ export const api = {
   status: () => request<Status>("/v1/tts/status"),
   models: () => request<Model[]>("/v1/tts/models"),
   routes: () => request<Route[]>("/v1/routes"),
+  /** The directories of the local service and its download settings. */
+  paths: () => request<Paths>("/v1/paths"),
+  /** Sets how many files of a repository are fetched at the same time. */
+  setDownloadConcurrency: (concurrency: number) =>
+    request<{ concurrency: number }>("/v1/settings/download-concurrency", {
+      method: "POST",
+      body: JSON.stringify({ concurrency }),
+    }),
 
   /** Searches the Hugging Face Hub for models the runtime can serve. */
   discover: async (query: string, limit = 20) => {

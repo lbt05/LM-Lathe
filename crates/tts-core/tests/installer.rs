@@ -187,6 +187,31 @@ async fn the_progress_is_measured_in_bytes() {
 }
 
 #[tokio::test]
+async fn the_files_are_fetched_at_the_same_time() {
+    let dir = TempDir::new("installer");
+    let (endpoint, _hub) = fake_hub();
+    let installer = ModelInstaller::new(dir.path().join("models/tts")).with_endpoint(&endpoint);
+    let tracker = InstallTracker::default();
+
+    // Two connections at the same time.
+    assert_eq!(installer.set_concurrency(2), 2);
+    assert_eq!(installer.concurrency(), 2);
+
+    tracker.start("qwen3-tts-1.7b-voicedesign");
+    installer
+        .install(&spec(), Some(&tracker))
+        .await
+        .expect("the installation failed");
+
+    // The progress counts every byte of every file, also when they arrive
+    // at the same time.
+    let progress = tracker.get("qwen3-tts-1.7b-voicedesign").unwrap();
+    assert_eq!(progress.files_done, 2);
+    assert_eq!(progress.bytes_total, 12);
+    assert_eq!(progress.bytes, 12);
+}
+
+#[tokio::test]
 async fn an_interrupted_download_is_continued() {
     let dir = TempDir::new("installer");
     let (endpoint, _hub) = fake_hub();

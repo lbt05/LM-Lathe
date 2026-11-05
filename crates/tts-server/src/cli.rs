@@ -257,7 +257,7 @@ pub async fn run(cli: Cli) -> Result<()> {
 
 /// Starts the HTTP API server.
 async fn serve(service: std::sync::Arc<TtsService>, args: ServeArgs) -> Result<()> {
-    let app = crate::api::router(service.clone());
+    let app = crate::api::router(service.clone(), &args.host);
     let address = format!("{}:{}", args.host, args.port);
     let listener = tokio::net::TcpListener::bind(&address)
         .await

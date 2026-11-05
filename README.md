@@ -277,7 +277,9 @@ the engine to time out.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/health` | Liveness and free memory |
+| `GET` | `/health` | Liveness, free memory and the address the service listens on |
+| `GET` | `/v1/paths` | The directories of the service and the number of the parallel downloads |
+| `POST` | `/v1/settings/download-concurrency` | Sets how many files of a repository are fetched at the same time |
 | `GET` | `/v1/models` | The models the server can serve: the checkpoint is on the disk and the machine can run it |
 | `GET` | `/v1/tts/models` | The full catalog with compatibility and runtime state, including the models that are not downloaded yet |
 | `GET` | `/v1/tts/status` | Runtime states, scheduler snapshot, hardware profile |

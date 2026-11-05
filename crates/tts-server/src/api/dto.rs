@@ -320,6 +320,32 @@ pub struct DiscoveredModelsDto {
     pub dropped: usize,
 }
 
+/// The directories of the application and the settings that belong to them.
+///
+/// The desktop application shows them on the 存储与下载 sheet, so they come
+/// from the running service and not from a guess.
+#[derive(Debug, Clone, Serialize)]
+pub struct PathsDto {
+    /// The root of everything the application stores.
+    pub root: String,
+    /// The directory of the speech checkpoints.
+    pub tts_models_root: String,
+    /// The directory of the language checkpoints.
+    pub llm_models_root: String,
+    /// The directory of the engines.
+    pub runtimes_root: String,
+    /// The directory of the installed engine versions.
+    pub engines_root: String,
+    /// The directory of the voice profiles.
+    pub voices_root: String,
+    /// The directory of the log files.
+    pub logs_root: String,
+    /// How many files of a repository are downloaded at the same time.
+    pub download_concurrency: usize,
+    /// The memory that is still free.
+    pub available_bytes: u64,
+}
+
 /// A voice profile.
 #[derive(Debug, Clone, Serialize)]
 pub struct VoiceDto {

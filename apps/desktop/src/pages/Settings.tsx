@@ -1,10 +1,8 @@
 import { useState } from "react";
 import { useStore, type Theme } from "../store";
 import {
-  Eyebrow,
   Icon,
   Note,
-  Pending,
   SheetHead,
   Tag,
 } from "../ui";
@@ -36,11 +34,15 @@ const THEMES: [Theme, string, string][] = [
   ["dark", "深色", "低对比的夜间配色"],
 ];
 
-/** Reads how much space the local storage uses. */
+/** Reads how much space the preferences of the application use. */
 function storageSize() {
   try {
-    const raw = localStorage.getItem("lmlathe.theme");
-    return raw ? `${(raw.length / 1024).toFixed(1)} KB` : "已启用 · 尚未保存";
+    const keys = ["lmlathe.theme", "lmlathe.backend", "lmlathe.bind"];
+    const bytes = keys.reduce((total, key) => {
+      const value = localStorage.getItem(key);
+      return total + (value ? value.length : 0);
+    }, 0);
+    return bytes ? `已启用 · ${bytes} 字节` : "已启用 · 尚未保存";
   } catch {
     return "不可用 · 浏览器禁用了本地存储";
   }
@@ -86,6 +88,33 @@ export default function Settings() {
             {store.starting ? "连接中…" : "连接"}
           </button>
         </SetRow>
+        <SetRow
+          label="监听地址"
+          desc="只允许本机时别的机器访问不到这个服务；允许局域网后，同一网络里的设备可以用这个地址调用接口。"
+        >
+          <div className="radios">
+            {(
+              [
+                ["127.0.0.1", "只允许本机", "服务只在这台机器上可见。"],
+                ["0.0.0.0", "允许局域网", "同一网络里的其它设备也能访问。"],
+              ] as [typeof store.bind, string, string][]
+            ).map(([value, title, desc]) => (
+              <label className="radio" key={value}>
+                <input
+                  type="radio"
+                  name="bind"
+                  checked={store.bind === value}
+                  disabled={store.starting}
+                  onChange={() => void store.applyBind(value)}
+                />
+                <span>
+                  <span className="radio__title">{title}</span>
+                  <span className="radio__desc">{desc}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </SetRow>
         <SetRow label="状态" desc="连接失败时服务日志会给出原因。">
           {store.error ? (
             <Tag tone="bad">异常</Tag>
@@ -127,8 +156,8 @@ export default function Settings() {
           </div>
         </SetRow>
         <SetRow
-          label="本地持久化"
-          desc="主题与界面偏好保存在本机的浏览器存储里，不上传任何数据。"
+          label="偏好存储"
+          desc="主题、后台地址和监听地址保存在本机的浏览器存储里（lmlathe.theme / lmlathe.backend / lmlathe.bind），不上传任何数据。"
         >
           <span className="mono" style={{ fontSize: "11.5px" }}>
             {storageSize()}
@@ -142,19 +171,37 @@ export default function Settings() {
           label="模型目录"
           desc="所有权重文件的根目录，删除模型时只清理这个目录下的内容。"
         >
-          <Pending label="未接入" />
+          <span className="mono" style={{ fontSize: "11.5px" }}>
+            {store.paths?.tts_models_root ?? "未连接"}
+          </span>
         </SetRow>
         <SetRow
           label="运行时目录"
           desc="各推理引擎的安装位置，切换版本时只在这个目录内替换。"
         >
-          <Pending label="未接入" />
+          <span className="mono" style={{ fontSize: "11.5px" }}>
+            {store.paths?.engines_root ?? "未连接"}
+          </span>
         </SetRow>
         <SetRow
           label="下载并发"
-          desc="同时下载的文件数。后端目前按顺序下载，暂不支持并发配置。"
+          desc="同时下载的文件数。权重文件越大，连接数越多越快。"
         >
-          <Pending label="未接入" />
+          <select
+            className="input"
+            style={{ width: "120px" }}
+            value={store.paths?.download_concurrency ?? 1}
+            disabled={!store.paths}
+            onChange={(event) =>
+              void store.setDownloadConcurrency(Number(event.target.value))
+            }
+          >
+            {[1, 2, 3, 4, 6, 8].map((value) => (
+              <option key={value} value={value}>
+                {value} 个文件
+              </option>
+            ))}
+          </select>
         </SetRow>
       </section>
 
@@ -164,14 +211,6 @@ export default function Settings() {
           <span className="mono" style={{ fontSize: "11.5px" }}>
             v0.1.0
           </span>
-        </SetRow>
-        <SetRow label="注册模型" desc="本地服务已知的模型数量。">
-          <span className="mono" style={{ fontSize: "11.5px" }}>
-            {store.models.length}
-          </span>
-        </SetRow>
-        <SetRow label="设计系统" desc="界面遵循 designs/index.html 的纸面工作台规范。">
-          <Eyebrow>PAPER WORKBENCH · V2</Eyebrow>
         </SetRow>
       </section>
     </>

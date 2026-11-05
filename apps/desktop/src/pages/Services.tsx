@@ -182,7 +182,7 @@ export default function Services() {
       </section>
 
       <section className="sheet">
-        <SheetHead eyebrow="ACTIVITY" title="事件流" meta={`最近 ${store.events.length} 条`} />
+        <SheetHead eyebrow="LOGS" title="日志" meta={`最近 ${store.events.length} 条`} />
         {store.events.length ? (
           <div className="events">
             {store.events.map((event, index) => (
@@ -195,7 +195,7 @@ export default function Services() {
           </div>
         ) : (
           <Empty
-            title="暂无事件"
+            title="暂无日志"
             text="安装、加载与停止模型时，这里会记录操作流水。"
           />
         )}
@@ -212,12 +212,27 @@ export function ServiceInspector({ id, tab }: { id: string; tab: string }) {
   const [logs, setLogs] = useState<string | null>(null);
 
   useEffect(() => {
-    if (tab !== "logs" || logs !== null) return;
-    void api
-      .modelLogs(id)
-      .then(setLogs)
-      .catch(() => setLogs("无法读取日志"));
-  }, [tab, logs, id]);
+    if (tab !== "logs") return;
+    // The engine writes its log while it runs, so the panel reads it again
+    // and again instead of showing the state of the first second.
+    let alive = true;
+    const read = () => {
+      void api
+        .modelLogs(id)
+        .then((text) => {
+          if (alive) setLogs(text);
+        })
+        .catch(() => {
+          if (alive) setLogs("无法读取日志");
+        });
+    };
+    read();
+    const timer = window.setInterval(read, 3000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [tab, id]);
 
   if (!runtime) {
     return (

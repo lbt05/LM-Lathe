@@ -49,7 +49,7 @@ impl Drop for TempDir {
 
 fn router(dir: &TempDir) -> axum::Router {
     let service = TtsService::with_paths(AppPaths::with_root(dir.path())).unwrap();
-    tts_server::api::router(service)
+    tts_server::api::router(service, "127.0.0.1")
 }
 
 async fn get(router: axum::Router, uri: &str) -> (StatusCode, axum::body::Body) {
@@ -446,6 +446,46 @@ async fn a_chat_request_without_a_model_is_rejected() {
 
 /// The search of the hub answers with the models of the query, and a
 /// query without a text is empty.
+#[tokio::test]
+async fn the_directories_of_the_service_are_reported() {
+    let dir = TempDir::new("api");
+    let (status, body) = get(router(&dir), "/v1/paths").await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+
+    // The paths point into the directory of the test, not into the home
+    // directory of the user.
+    let root = json["root"].as_str().unwrap();
+    assert!(root.starts_with(dir.path().to_str().unwrap()), "{root}");
+    assert!(json["tts_models_root"].as_str().unwrap().ends_with("models/tts"));
+    assert!(json["engines_root"].as_str().unwrap().ends_with("runtimes/engines"));
+    assert_eq!(json["download_concurrency"], 1);
+}
+
+#[tokio::test]
+async fn the_number_of_the_parallel_downloads_can_be_changed() {
+    let dir = TempDir::new("api");
+    let app = router(&dir);
+    let (status, body) = post_json(
+        app.clone(),
+        "/v1/settings/download-concurrency",
+        serde_json::json!({ "concurrency": 4 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(json["concurrency"], 4);
+
+    // The service keeps the number, so the next answer reports it.
+    let (status, body) = get(app, "/v1/paths").await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(json["download_concurrency"], 4);
+}
+
 #[tokio::test]
 async fn the_hub_is_searched_for_models() {
     let dir = TempDir::new("api");
