@@ -1966,6 +1966,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tts-core",
  "uuid",
  "zip",
 ]
