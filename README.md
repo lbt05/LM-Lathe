@@ -233,7 +233,7 @@ cargo test --workspace    # 76 个测试，14 个 target
 
 ### 桌面应用
 
-- [ ] 应用图标还是旧的波形图标，换成 LM-Lathe 的标志
+- [x] 应用图标换成 LM-Lathe 的标志（`apps/desktop/src-tauri/logo.png`，`npm run icon` erzeugt alle Größen）
 - [ ] 声音库没有界面：声音设计与克隆只能在 API 与 CLI 里用
 - [ ] 语言模型没有聊天界面：只能通过 `/v1/chat/completions` 或 `lm-lathe-server chat`
 - [ ] `.app` 没有签名与公证，换机器安装时 Gatekeeper 会拦
