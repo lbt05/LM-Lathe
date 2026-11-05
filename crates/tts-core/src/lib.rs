@@ -34,7 +34,9 @@ pub use engine_assets::{
 pub use error::{TtsError, TtsResult};
 pub use hardware::HardwareProfile;
 pub use hub::{HubClient, HubModel};
-pub use installer::{InstallProgress, InstallReport, InstallTracker, ModelInstaller};
+pub use installer::{
+    directory_size, InstallProgress, InstallReport, InstallTracker, ModelInstaller,
+};
 pub use llm::{gguf_checkpoint, LlmRuntime, LlmRuntimeManager};
 pub use paths::AppPaths;
 pub use registry::{CompatibilityLevel, CompatibilityReport, TTSModelRegistry, TTSModelSpec};

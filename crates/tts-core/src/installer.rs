@@ -116,6 +116,12 @@ impl InstallTracker {
     }
 
     /// The progress of one installation.
+    /// Removes the entry of a download from the log.
+    pub fn remove(&self, model_id: &str) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.remove(model_id);
+    }
+
     pub fn get(&self, model_id: &str) -> Option<InstallProgress> {
         let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         entries.get(model_id).cloned()
@@ -521,6 +527,27 @@ impl ModelInstaller {
         Ok(())
     }
 
+    /// Throws away the files of a download that was stopped, so that the
+    /// space on the disk is free again. The next attempt starts from zero.
+    pub fn discard(&self, spec: &TTSModelSpec) -> TtsResult<u64> {
+        let directory = self.target_dir(spec);
+        let bytes = directory_size(&directory);
+        if !directory.exists() {
+            return Ok(0);
+        }
+        tracing::warn!(
+            model = %spec.id,
+            path = %directory.display(),
+            bytes,
+            "throwing away the files of a download that was stopped"
+        );
+        std::fs::remove_dir_all(&directory).map_err(|source| TtsError::Io {
+            path: directory.clone(),
+            source,
+        })?;
+        Ok(bytes)
+    }
+
     /// Adds the authorization header when a token is available.
     fn authorized(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.token {
@@ -554,7 +581,8 @@ fn is_optional_asset(path: &str) -> bool {
 }
 
 /// The size of a directory in bytes.
-fn directory_size(path: &Path) -> u64 {
+/// The number of bytes that the files below a directory occupy.
+pub fn directory_size(path: &Path) -> u64 {
     let mut total = 0;
     let Ok(entries) = std::fs::read_dir(path) else {
         return 0;

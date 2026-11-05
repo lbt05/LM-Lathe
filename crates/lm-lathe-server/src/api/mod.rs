@@ -116,6 +116,7 @@ pub const ROUTES: &[RouteInfo] = &[
     RouteInfo { method: "POST", path: "/v1/tts/models/{id}/install", summary: "下载模型" },
     RouteInfo { method: "GET", path: "/v1/tts/models/{id}/install", summary: "下载进度" },
     RouteInfo { method: "POST", path: "/v1/tts/models/{id}/install/cancel", summary: "取消下载" },
+    RouteInfo { method: "POST", path: "/v1/tts/models/{id}/install/discard", summary: "丢弃中止的下载" },
     RouteInfo { method: "GET", path: "/v1/tts/installs", summary: "所有下载的进度" },
     RouteInfo { method: "POST", path: "/v1/tts/models/{id}/uninstall", summary: "删除本地模型" },
     RouteInfo { method: "GET", path: "/v1/tts/models/{id}/logs", summary: "引擎日志" },
@@ -172,6 +173,7 @@ pub fn router(service: Arc<TtsService>, bind: &str) -> Router {
         .route("/v1/tts/models/{id}/install", post(install_model))
         .route("/v1/tts/models/{id}/install", get(install_progress))
         .route("/v1/tts/models/{id}/install/cancel", post(cancel_install))
+        .route("/v1/tts/models/{id}/install/discard", post(discard_install))
         .route("/v1/tts/installs", get(list_installs))
         .route("/v1/tts/models/{id}/uninstall", post(uninstall_model))
         .route("/v1/tts/models/{id}/logs", get(model_logs))
@@ -1199,6 +1201,84 @@ async fn cancel_install(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// `POST /v1/tts/models/{id}/install/discard`
+///
+/// Throws away the files of a download that was stopped: the space on the
+/// disk is free again and the next attempt starts from zero.
+async fn discard_install(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    // The model is known: the files are in the directory of the checkpoint.
+    if let Ok(spec) = resolve_model(&state.service, &id) {
+        if state.service.registry.is_installed(&spec.id) {
+            return Err(ApiError::from(TtsError::InvalidRequest(format!(
+                "`{}` 已经下载好了，要删除它请用删除模型",
+                spec.id
+            ))));
+        }
+        state.service.installer.cancel(&spec.id);
+        let bytes = state.service.installer.discard(&spec)?;
+        state.service.installs.remove(&spec.id);
+        tracing::info!(model = %spec.id, bytes, "the files of the download were thrown away");
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+
+    // The model is not in the catalogue any more (the service was restarted
+    // and the model came from a search): the directory of the download is
+    // looked for by its name.
+    let Some(name) = safe_directory_name(&id) else {
+        return Err(ApiError::from(TtsError::InvalidRequest(
+            "这个名称不是有效的模型".to_string(),
+        )));
+    };
+    let mut found = None;
+    for root in [
+        state.service.registry.models_root(),
+        state.service.registry.llm_models_root(),
+    ] {
+        let directory = root.join(name);
+        if directory.is_dir() {
+            found = Some(directory);
+            break;
+        }
+    }
+    let Some(directory) = found else {
+        return Err(ApiError::from(TtsError::ModelNotFound(format!(
+            "unknown TTS model `{id}`"
+        ))));
+    };
+    // Only a download that was interrupted has a part file. A directory
+    // without one holds a model, and that is not thrown away here.
+    if part_files_size(&directory) == 0 {
+        return Err(ApiError::from(TtsError::InvalidRequest(format!(
+            "`{id}` 不是中断的下载，请用删除模型来清理它"
+        ))));
+    }
+    let bytes = tts_core::installer::directory_size(&directory);
+    std::fs::remove_dir_all(&directory).map_err(|source| TtsError::Io {
+        path: directory.clone(),
+        source,
+    })?;
+    state.service.installs.remove(&id);
+    tracing::info!(model = %id, bytes, "the files of the download were thrown away");
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The name of a directory of a download, when it is safe to use.
+fn safe_directory_name(id: &str) -> Option<&str> {
+    if id.is_empty() || id.len() > 200 || id.contains("..") {
+        return None;
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return None;
+    }
+    Some(id)
+}
+
 /// The progress of one download, with the name of the model.
 #[derive(Debug, serde::Serialize)]
 struct InstallDto {
@@ -1270,6 +1350,55 @@ async fn list_installs(State(state): State<ApiState>) -> Result<Response, ApiErr
             bytes_total,
             error: None,
         });
+    }
+    // The downloads that no model of the catalogue belongs to: the service
+    // was restarted and the model came from a search. The directories with
+    // part files tell which ones they are.
+    let known: Vec<String> = state
+        .service
+        .registry
+        .list()
+        .iter()
+        .flat_map(|spec| {
+            [
+                spec.id.clone(),
+                spec.hf_repo.replace('/', "--"),
+            ]
+        })
+        .collect();
+    for root in [
+        state.service.registry.models_root(),
+        state.service.registry.llm_models_root(),
+    ] {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if known.iter().any(|item| item == name) {
+                continue;
+            }
+            let bytes = part_files_size(&path);
+            if bytes == 0 {
+                continue;
+            }
+            list.push(InstallDto {
+                model_id: name.to_string(),
+                name: name.to_string(),
+                state: "partial".to_string(),
+                files_done: 0,
+                files_total: 0,
+                bytes,
+                bytes_total: 0,
+                error: None,
+            });
+        }
     }
     Ok(axum::Json(list).into_response())
 }

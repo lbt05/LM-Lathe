@@ -178,6 +178,9 @@ export default function Models({
   // Deleting a checkpoint removes gigabytes from the disk, the row waits for
   // a second click before it does.
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // The confirmation for throwing away the files of a download that was
+  // stopped.
+  const [confirmDiscard, setConfirmDiscard] = useState<string | null>(null);
   // The search of the Hugging Face Hub, which is where the models that
   // are not part of the application come from.
   const [hubQuery, setHubQuery] = useState("");
@@ -195,6 +198,13 @@ export default function Models({
     const timer = window.setTimeout(() => setConfirmDelete(null), 6000);
     return () => window.clearTimeout(timer);
   }, [confirmDelete]);
+
+  // The same for the files of a download that was stopped.
+  useEffect(() => {
+    if (!confirmDiscard) return;
+    const timer = window.setTimeout(() => setConfirmDiscard(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [confirmDiscard]);
 
   const catalog = useMemo(
     () => models.filter((model) => !model.installed),
@@ -481,6 +491,31 @@ export default function Models({
                       </button>
                     </>
                   )}
+                  {job.state === "failed" ||
+                  job.state === "partial" ||
+                  job.state === "cancelled" ? (
+                    confirmDiscard === job.id ? (
+                      <button
+                        className="btn btn--danger"
+                        type="button"
+                        onClick={() => {
+                          setConfirmDiscard(null);
+                          void store.discardInstall(job);
+                        }}
+                      >
+                        确认丢弃
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn--ghost"
+                        type="button"
+                        title="丢弃已经下载的部分，腾出磁盘空间"
+                        onClick={() => setConfirmDiscard(job.id)}
+                      >
+                        丢弃
+                      </button>
+                    )
+                  ) : null}
                 </span>
               </div>
             ))}

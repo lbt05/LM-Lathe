@@ -111,6 +111,7 @@ interface Store {
   enqueue: (job: InstallJob) => void;
   retryInstall: (job: InstallJob) => void;
   cancelInstall: (job: InstallJob) => void;
+  discardInstall: (job: InstallJob) => void;
 
   theme: Theme;
   setTheme: (theme: Theme) => void;
@@ -532,6 +533,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [log, notify],
   );
 
+  const discardInstall = useCallback(
+    async (job: InstallJob) => {
+      try {
+        await api.discardInstall(job.id);
+        setQueue((current) => current.filter((item) => item.id !== job.id));
+        log("warn", `已丢弃下载 ${job.name}`);
+        notify(`已丢弃 ${job.name} 的残留文件`);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : String(err), "bad");
+      }
+    },
+    [log, notify],
+  );
+
   const enqueue = useCallback((job: InstallJob) => {
     setQueue((current) => [
       ...current.filter((item) => item.id !== job.id),
@@ -607,6 +622,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       enqueue,
       retryInstall,
       cancelInstall,
+      discardInstall,
       theme,
       setTheme,
     }),
@@ -636,6 +652,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       enqueue,
       retryInstall,
       cancelInstall,
+      discardInstall,
       theme,
       setTheme,
     ],

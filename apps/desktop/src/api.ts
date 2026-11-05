@@ -384,6 +384,8 @@ export const api = {
   /** Stops a running download. The files that are already there stay. */
   cancelInstall: (id: string) =>
     request<void>(`/v1/tts/models/${id}/install/cancel`, { method: "POST" }),
+  discardInstall: (id: string) =>
+    request<void>(`/v1/tts/models/${id}/install/discard`, { method: "POST" }),
   modelLogs: async (id: string) => {
     const response = await fetch(`${baseUrl}/v1/tts/models/${id}/logs`);
     return response.text();
