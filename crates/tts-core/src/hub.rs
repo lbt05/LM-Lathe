@@ -498,6 +498,35 @@ impl HubModel {
         }
     }
 
+    /// The hardware the checkpoint needs.
+    ///
+    /// The engine that serves a speech checkpoint decides where it can run:
+    /// the CUDA path of SGLang-Omni needs a machine with an NVIDIA GPU, the
+    /// MLX paths need an Apple Silicon. A checkpoint that is discovered on a
+    /// machine that cannot run it is marked as such, so the user is not
+    /// invited to download gigabytes that never start.
+    pub fn hardware_requirement(&self) -> crate::registry::HardwareRequirement {
+        match self.family() {
+            Some(ModelFamily::Qwen3Tts) | Some(ModelFamily::FishDrama3)
+                if self.format() == "mlx" =>
+            {
+                crate::registry::HardwareRequirement {
+                    platforms: vec!["macos".to_string()],
+                    require_apple_silicon: true,
+                    ..Default::default()
+                }
+            }
+            Some(ModelFamily::Qwen3Tts) | Some(ModelFamily::FishDrama3) => {
+                crate::registry::HardwareRequirement {
+                    platforms: vec!["linux".to_string()],
+                    require_cuda: true,
+                    ..Default::default()
+                }
+            }
+            _ => Default::default(),
+        }
+    }
+
     /// The files that have to be downloaded.
     ///
     /// A GGUF repository keeps one file per quantisation; only the chosen
@@ -689,7 +718,25 @@ impl HubModel {
                     TtsFeature::TextToSpeech,
                     TtsFeature::VoiceCloning,
                 ],
-                _ => vec![TtsFeature::TextToSpeech],
+                ModelFamily::Qwen3Tts => {
+                    // The name of the repository tells what the checkpoint can
+                    // do: a voice design checkpoint writes a voice from a
+                    // description, a custom voice checkpoint speaks with a
+                    // built-in speaker and a base checkpoint clones the voice
+                    // of a reference clip.
+                    let mut features = vec![TtsFeature::TextToSpeech];
+                    if self.id.contains("VoiceDesign") {
+                        features.push(TtsFeature::VoiceDesign);
+                        features.push(TtsFeature::InstructionControl);
+                    }
+                    if self.id.contains("CustomVoice") {
+                        features.push(TtsFeature::CustomVoice);
+                    }
+                    if self.id.contains("Base") {
+                        features.push(TtsFeature::VoiceCloning);
+                    }
+                    features
+                }
             },
             llm_features: match family {
                 ModelFamily::Llm => vec![LlmFeature::Chat],
@@ -698,7 +745,7 @@ impl HubModel {
             files: wanted,
             hardware: crate::registry::HardwareRequirement {
                 min_total_ram_bytes: family.memory_requirement(),
-                ..Default::default()
+                ..self.hardware_requirement()
             },
             mode: match family {
                 ModelFamily::Llm => EngineMode::LlamaCpp,
@@ -747,6 +794,7 @@ fn encode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::HubModel;
+    use crate::types::TtsFeature;
 
     const PAYLOAD: &str = r#"[
         {
@@ -901,6 +949,85 @@ mod tests {
             };
             assert!(model.is_runnable(), "{id} was dropped");
             assert_eq!(model.engine_id(), "mlx-audio", "{id} has the wrong engine");
+        }
+    }
+
+    /// The hardware of a discovered checkpoint follows the engine that serves
+    /// it: the CUDA runtime needs an NVIDIA GPU, the MLX runtime needs an
+    /// Apple Silicon. A checkpoint that cannot run on this machine is marked
+    /// as such.
+    #[test]
+    fn a_discovered_checkpoint_carries_the_hardware_of_its_engine() {
+        let mlx = HubModel {
+            id: "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit".to_string(),
+            pipeline_tag: Some("text-to-speech".to_string()),
+            library_name: None,
+            downloads: 100,
+            likes: 1,
+            last_modified: None,
+            created_at: None,
+            tags: vec!["mlx".to_string(), "text-to-speech".to_string()],
+            siblings: Vec::new(),
+            size_bytes: None,
+            parameters: None,
+        };
+        let hardware = mlx.hardware_requirement();
+        assert!(hardware.require_apple_silicon);
+        assert!(!hardware.require_cuda);
+        assert_eq!(hardware.platforms, vec!["macos".to_string()]);
+
+        let cuda = HubModel {
+            id: "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign".to_string(),
+            pipeline_tag: Some("text-to-speech".to_string()),
+            library_name: None,
+            downloads: 100,
+            likes: 1,
+            last_modified: None,
+            created_at: None,
+            tags: vec!["safetensors".to_string(), "text-to-speech".to_string()],
+            siblings: Vec::new(),
+            size_bytes: None,
+            parameters: None,
+        };
+        let hardware = cuda.hardware_requirement();
+        assert!(hardware.require_cuda);
+        assert!(!hardware.require_apple_silicon);
+        assert_eq!(hardware.platforms, vec!["linux".to_string()]);
+    }
+
+    /// The name of the repository tells what a checkpoint of Qwen3-TTS can do,
+    /// and the model that is built from it carries those features.
+    #[test]
+    fn a_discovered_checkpoint_knows_what_it_can_do() {
+        for (id, feature) in [
+            (
+                "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit",
+                TtsFeature::VoiceDesign,
+            ),
+            (
+                "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit",
+                TtsFeature::CustomVoice,
+            ),
+            (
+                "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit",
+                TtsFeature::VoiceCloning,
+            ),
+        ] {
+            let model = HubModel {
+                id: id.to_string(),
+                pipeline_tag: Some("text-to-speech".to_string()),
+                library_name: None,
+                downloads: 100,
+                likes: 1,
+                last_modified: None,
+                created_at: None,
+                tags: vec!["mlx".to_string(), "text-to-speech".to_string()],
+                siblings: Vec::new(),
+                size_bytes: None,
+                parameters: None,
+            };
+            let spec = model.to_spec(&[]).expect("the checkpoint is usable");
+            assert!(spec.features.contains(&feature), "{id} misses {feature:?}");
         }
     }
 

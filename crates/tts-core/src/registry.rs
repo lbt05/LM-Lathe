@@ -534,7 +534,7 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
                 TtsFeature::Streaming,
             ],
             hardware: HardwareRequirement {
-                platforms: vec!["linux".to_string(), "macos".to_string()],
+                platforms: vec!["linux".to_string()],
                 require_cuda: true,
                 require_apple_silicon: false,
                 require_mlx: false,
@@ -542,9 +542,9 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
                 min_cuda_compute: None,
                 notes: Some(
                     "VoiceDesign requires `task_type=VoiceDesign` and a non-empty `instructions` \
-                     field. The runtime of this model needs CUDA: on Apple Silicon the MPS path \
-                     of SGLang-Omni crashes while the speech tokenizer is loaded, so the MLX \
-                     checkpoint `qwen3-tts-1.7b-voicedesign-mlx` is the one to use."
+                     field. This checkpoint needs a CUDA device: the Apple Silicon path of \
+                     SGLang-Omni was removed after it crashed in the MPS backend, so the MLX \
+                     checkpoint `qwen3-tts-1.7b-voicedesign-mlx` is the one to use on a Mac."
                         .to_string(),
                 ),
             },
@@ -575,14 +575,14 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
                 TtsFeature::Streaming,
             ],
             hardware: HardwareRequirement {
-                platforms: vec!["linux".to_string(), "macos".to_string()],
+                platforms: vec!["linux".to_string()],
                 require_cuda: true,
                 min_total_ram_bytes: 16 * GB,
                 notes: Some(
-                    "Built-in speakers: Vivian, Ryan, Dylan, Eric, and others. The runtime of \
-                     this model needs CUDA: on Apple Silicon the MPS path of SGLang-Omni \
-                     crashes, so the MLX checkpoint `qwen3-tts-1.7b-customvoice-mlx` is the one \
-                     to use."
+                    "Built-in speakers: Vivian, Ryan, Dylan, Eric, and others. This checkpoint \
+                     needs a CUDA device: the Apple Silicon path of SGLang-Omni was removed \
+                     after it crashed in the MPS backend, so the MLX checkpoint \
+                     `qwen3-tts-1.7b-customvoice-mlx` is the one to use on a Mac."
                         .to_string(),
                 ),
                 ..Default::default()
@@ -613,13 +613,14 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
                 TtsFeature::Streaming,
             ],
             hardware: HardwareRequirement {
-                platforms: vec!["linux".to_string(), "macos".to_string()],
+                platforms: vec!["linux".to_string()],
                 require_cuda: true,
                 min_total_ram_bytes: 16 * GB,
                 notes: Some(
-                    "Voice cloning requires a reference clip. The runtime of this model needs \
-                     CUDA: on Apple Silicon the MPS path of SGLang-Omni crashes, so the MLX \
-                     checkpoint `qwen3-tts-1.7b-base-mlx` is the one to use."
+                    "Voice cloning requires a reference clip. This checkpoint needs a CUDA \
+                     device: the Apple Silicon path of SGLang-Omni was removed after it \
+                     crashed in the MPS backend, so the MLX checkpoint \
+                     `qwen3-tts-1.7b-base-mlx` is the one to use on a Mac."
                         .to_string(),
                 ),
                 ..Default::default()
@@ -650,13 +651,13 @@ pub fn builtin_models() -> Vec<TTSModelSpec> {
                 TtsFeature::Streaming,
             ],
             hardware: HardwareRequirement {
-                platforms: vec!["linux".to_string(), "macos".to_string()],
+                platforms: vec!["linux".to_string()],
                 require_cuda: true,
                 min_total_ram_bytes: 8 * GB,
                 notes: Some(
-                    "Voice cloning requires a reference clip. The runtime of this model needs \
-                     CUDA: on Apple Silicon the MPS path of SGLang-Omni crashes while the \
-                     speech tokenizer is loaded."
+                    "Voice cloning requires a reference clip. This checkpoint needs a CUDA \
+                     device: the Apple Silicon path of SGLang-Omni was removed after it \
+                     crashed in the MPS backend while it loaded the speech tokenizer."
                         .to_string(),
                 ),
                 ..Default::default()

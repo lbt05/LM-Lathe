@@ -443,11 +443,8 @@ fn discovered_warnings(
         && model.parameters.unwrap_or_default() > 1_000_000_000
     {
         warnings.push(
-            "在 Apple Silicon 上，Torch MPS 加载这个检查点时会崩溃（torch 的已知问题）。"
+            "在 Apple Silicon 上，SGLang-Omni 的 MPS 路径已经停用（Torch 加载这个检查点时会崩溃），请改用同系列的 MLX 转换版。"
                 .to_string(),
-        );
-        warnings.push(
-            "可以改用 0.6B 的 MLX 转换版（qwen3-tts-0.6b-customvoice-mlx）。".to_string(),
         );
     }
 
@@ -650,7 +647,7 @@ fn warnings_for(
         && spec.parameters.unwrap_or_default() > 1_000_000_000
     {
         warnings.push(
-            "在 Apple Silicon 上，Torch MPS 加载这个检查点时会崩溃（torch 的已知问题）。             可以改用 0.6B 的 MLX 转换版（qwen3-tts-0.6b-customvoice-mlx）。"
+            "在 Apple Silicon 上，SGLang-Omni 的 MPS 路径已经停用（Torch 加载这个检查点时会崩溃），请改用同系列的 MLX 转换版。"
                 .to_string(),
         );
     }

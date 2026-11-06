@@ -301,7 +301,7 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
         EngineDefinition {
             id: "sglang-omni".to_string(),
             name: "SGLang-Omni".to_string(),
-            summary: "TTS 推理服务：CUDA 走 PyPI 发行版，Apple Silicon 走源码安装的 MPS 路径。".to_string(),
+            summary: "TTS 推理服务：CUDA 走 PyPI 发行版，需要 NVIDIA GPU。".to_string(),
             distribution: EngineDistribution::PythonPackage,
             repository: Some("sgl-project/sglang-omni".to_string()),
             program: "sgl-omni".to_string(),
@@ -319,34 +319,16 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
                 "voice-design".to_string(),
                 "streaming".to_string(),
             ],
-            deliveries: vec![
-                PlatformDelivery {
-                    package: Some("sglang-omni".to_string()),
-                    program_path: Some("venv/bin/sgl-omni".to_string()),
-                    requirements: vec!["uv".to_string()],
-                    note: Some("CUDA 路径：PyPI 发行版（wheel 带 CUDA 依赖），需要 CUDA 运行时。".to_string()),
-                    ..delivery(
-                        &["linux-x64", "linux-arm64"],
-                        EngineDistribution::PythonPackage,
-                    )
-                },
-                PlatformDelivery {
-                    install_script: Some("install.sh".to_string()),
-                    program_path: Some(".venv-apple/bin/sgl-omni".to_string()),
-                    requirements: vec![
-                        "brew".to_string(),
-                        "uv".to_string(),
-                        "git".to_string(),
-                    ],
-                    note: Some(
-                        "Apple Silicon 的 MPS 路径：源码安装。install.sh 建 Python 3.12 虚拟环境 \
-                         (.venv-apple)，装 ffmpeg@7 与 uv，并从源码安装 SGLang（MPS）；TTS 模型在 \
-                         Mac 上由原生 MLX 运行时提供。"
-                            .to_string(),
-                    ),
-                    ..delivery(&["darwin-arm64"], EngineDistribution::SourceBuild)
-                },
-            ],
+            deliveries: vec![PlatformDelivery {
+                package: Some("sglang-omni".to_string()),
+                program_path: Some("venv/bin/sgl-omni".to_string()),
+                requirements: vec!["uv".to_string()],
+                note: Some("CUDA 路径：PyPI 发行版（wheel 带 CUDA 依赖），需要 CUDA 运行时。".to_string()),
+                ..delivery(
+                    &["linux-x64", "linux-arm64"],
+                    EngineDistribution::PythonPackage,
+                )
+            }],
             model_engine_ids: vec!["sglang-omni".to_string()],
             managed_model_engine_ids: vec!["sglang-omni".to_string()],
             build_tags: Vec::new(),
@@ -694,6 +676,10 @@ impl EngineAssetManager {
     }
 
     /// The state of every known engine.
+    ///
+    /// An engine that has no delivery for this platform cannot run here and
+    /// is not listed. An engine that is installed or that sits in the path
+    /// stays in the list, so the user can still see and remove it.
     pub fn list(&self) -> Vec<EngineAsset> {
         let manifest = self.manifest.lock().unwrap_or_else(|e| e.into_inner());
         engine_definitions()
@@ -744,6 +730,12 @@ impl EngineAssetManager {
                     status,
                     model_engine_ids: definition.model_engine_ids.clone(),
                 }
+            })
+            .filter(|asset| {
+                asset.supported_here
+                    || !asset.installed.is_empty()
+                    || asset.current_version.is_some()
+                    || asset.system_entry.is_some()
             })
             .collect()
     }
@@ -2143,5 +2135,47 @@ mod shebang_tests {
         assert_eq!(fs::read_to_string(&script).unwrap(), "#!/bin/sh\necho hallo\n");
 
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::{platform_key, EngineAssetManager};
+    use crate::paths::AppPaths;
+
+    /// An engine that has no delivery for this platform cannot run here and
+    /// is not listed. The engines that run everywhere stay.
+    #[test]
+    fn an_engine_without_a_delivery_for_this_platform_is_not_listed() {
+        let root = std::env::temp_dir().join(format!("lm-lathe-engines-{}", std::process::id()));
+        let manager = EngineAssetManager::new(AppPaths::with_root(&root)).expect("the manager starts");
+        let listed: Vec<String> = manager
+            .list()
+            .into_iter()
+            .map(|asset| asset.id)
+            .collect();
+
+        let on_linux = platform_key().starts_with("linux");
+        let on_macos = platform_key().starts_with("darwin");
+
+        // The torch runtime of SGLang-Omni has no Apple Silicon delivery any
+        // more: it crashed in the MPS backend.
+        assert_eq!(
+            listed.contains(&"sglang-omni".to_string()),
+            on_linux,
+            "the torch runtime is listed on {}",
+            platform_key()
+        );
+        // The MLX runtimes only exist on Apple Silicon.
+        assert_eq!(listed.contains(&"mlx-audio".to_string()), on_macos);
+        assert_eq!(listed.contains(&"mlx".to_string()), on_macos);
+        assert_eq!(
+            listed.contains(&"sglang-omni-mlx".to_string()),
+            on_macos
+        );
+        // llama.cpp runs everywhere.
+        assert!(listed.contains(&"llama.cpp".to_string()));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
