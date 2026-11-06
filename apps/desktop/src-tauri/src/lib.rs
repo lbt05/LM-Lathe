@@ -26,13 +26,9 @@ pub fn run() {
         // The backend dies together with the application.
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = handle.try_state::<server::ServerState>() {
-                // Closing the pipe asks the backend to stop.
-                let _ = state.stdin.lock().unwrap().take();
-                let child = state.child.lock().unwrap().take();
-                if let Some(mut child) = child {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
+                // The backend stops by itself and takes the engine that
+                // holds the model with it.
+                server::stop(&state);
             }
         }
     });

@@ -134,6 +134,9 @@ const DEFAULT_PORT: u16 = 54321;
 /// The number of ports the application tries before it gives up.
 const PORT_RANGE: u16 = 64;
 
+/// The time the backend gets to stop by itself.
+const STOP_GRACE: Duration = Duration::from_secs(20);
+
 /// What the application does with a port.
 enum PortChoice {
     /// The port is free, the backend is started there.
@@ -294,6 +297,14 @@ pub async fn start_server(
         .arg(port.to_string())
         .stdin(Stdio::piped());
 
+    // The backend leads a group of its own, so that the engines it starts
+    // can be reached together with it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
     // The backend follows the life cycle of this process.
     command.env("TTS_SERVER_EXIT_ON_STDIN_EOF", "1");
 
@@ -345,16 +356,68 @@ pub async fn start_server(
 }
 
 /// Stops the backend.
-#[tauri::command]
-pub fn stop_server(state: State<'_, ServerState>) -> Result<(), String> {
+///
+/// The pipe is closed first: the backend sees the end of it, stops by itself
+/// and takes the engine that holds the model with it. Only when the backend
+/// does not go away by itself, it is killed.
+pub fn stop(state: &ServerState) {
     let child = state.child.lock().unwrap().take();
     // Closing the pipe asks the backend to stop.
     let _ = state.stdin.lock().unwrap().take();
-    if let Some(mut child) = child {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
     *state.base.lock().unwrap() = None;
+
+    let Some(mut child) = child else {
+        return;
+    };
+
+    // The backend stops by itself when the pipe reaches its end. On the way
+    // out it stops the engine that holds the model.
+    let deadline = Instant::now() + STOP_GRACE;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(_) => break,
+        }
+    }
+
+    // It did not go away: the whole group is killed, so that no engine is
+    // left behind.
+    terminate(&mut child);
+}
+
+/// Kills the backend and the engines it started.
+fn terminate(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        // The backend leads the group, the engines it started are in it.
+        let group = -(child.id() as i32);
+        unsafe {
+            libc::kill(group, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(_) => break,
+            }
+        }
+        unsafe {
+            libc::kill(group, libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+/// Stops the backend.
+#[tauri::command]
+pub fn stop_server(state: State<'_, ServerState>) -> Result<(), String> {
+    stop(&state);
     Ok(())
 }
 

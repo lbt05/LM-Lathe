@@ -22,6 +22,11 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# The backend and the engines it starts are killed together, which needs the
+# signals of the system.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
