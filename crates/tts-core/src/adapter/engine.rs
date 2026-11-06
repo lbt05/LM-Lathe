@@ -210,6 +210,18 @@ impl SGLangOmniAdapter {
                 args.push("127.0.0.1".to_string());
                 args.push("--port".to_string());
                 args.push(port.to_string());
+                // The server writes its own log into a directory. The
+                // default is relative, and the working directory of the
+                // process is not always writable: the application starts the
+                // engine from inside its bundle.
+                args.push("--log-dir".to_string());
+                args.push(
+                    self.settings
+                        .logs_dir
+                        .join("mlx-audio")
+                        .to_string_lossy()
+                        .to_string(),
+                );
                 args.extend(config.extra_args.iter().cloned());
                 let binary = self
                     .settings
@@ -394,6 +406,10 @@ impl EngineAdapter for SGLangOmniAdapter {
         let mut command = Command::new(&binary);
         command
             .args(&args)
+            // The engine runs in the directory of its logs, so that a
+            // relative path of the engine always has a writable place to go
+            // to.
+            .current_dir(&self.settings.logs_dir)
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .kill_on_drop(false);
@@ -674,4 +690,37 @@ pub fn parse_engine_output(
     fallback: AudioFormat,
 ) -> TtsResult<AudioOutput> {
     raw_to_audio_output(response, fallback)
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::{EngineSettings, SGLangOmniAdapter};
+    use crate::types::{EngineMode, TTSRuntimeConfig};
+    use std::path::{Path, PathBuf};
+
+    /// The mlx-audio server writes a log into a directory of its own. The
+    /// working directory of the process is not always writable: the
+    /// application starts the engine from inside its bundle.
+    #[test]
+    fn the_mlx_audio_server_gets_a_writable_log_directory() {
+        let adapter = SGLangOmniAdapter::new(EngineSettings {
+            logs_dir: PathBuf::from("/tmp/lm-lathe-logs"),
+            ..Default::default()
+        });
+        let config = TTSRuntimeConfig::new(
+            "qwen3-tts-1.7b-voicedesign-mlx",
+            "mlx-audio",
+            "/models/voicedesign",
+            EngineMode::MlxAudio,
+        );
+        let (_, args) = adapter.build_command(&config, 54321);
+
+        let index = args
+            .iter()
+            .position(|argument| argument == "--log-dir")
+            .expect("the server is told where to write its log");
+        let directory = Path::new(&args[index + 1]);
+        assert!(directory.is_absolute(), "{directory:?} is a relative path");
+        assert!(directory.starts_with("/tmp/lm-lathe-logs"));
+    }
 }

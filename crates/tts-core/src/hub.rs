@@ -737,6 +737,8 @@ impl HubModel {
                     }
                     features
                 }
+                #[cfg(feature = "mock-engine")]
+                ModelFamily::Mock => vec![TtsFeature::TextToSpeech],
             },
             llm_features: match family {
                 ModelFamily::Llm => vec![LlmFeature::Chat],
