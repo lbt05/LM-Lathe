@@ -11,6 +11,7 @@ use ai_scheduler::{Scheduler, SchedulerConfig};
 
 use crate::adapter::engine::EngineSettings;
 use crate::adapter::factory::AdapterFactory;
+use crate::adopt::{self, AdoptedCheckpoint};
 use crate::audio::AudioManager;
 use crate::engine_assets::EngineAssetManager;
 use crate::error::TtsResult;
@@ -47,6 +48,14 @@ pub struct TtsService {
     pub engines: Arc<EngineAssetManager>,
     /// Runtime of the language models.
     pub llm: Arc<LlmRuntimeManager>,
+    /// The checkpoints that were found on the disk and are not in the
+    /// catalogue of the application.
+    ///
+    /// The catalogue is built in the memory, so a model of a search of the
+    /// hub is forgotten when the service stops. The checkpoints that were
+    /// adopted from the disk are looked up in the hub afterwards, to learn
+    /// the things that only the hub knows.
+    pub adopted: Vec<AdoptedCheckpoint>,
 }
 
 impl TtsService {
@@ -67,6 +76,19 @@ impl TtsService {
         let installer = Arc::new(
             ModelInstaller::new(paths.tts_models_root()).with_llm_root(paths.llm_models_root()),
         );
+
+        // The checkpoints that are on the disk are adopted into the
+        // catalogue: a model that was downloaded from a search of the hub
+        // would be forgotten by the catalogue otherwise, even though its
+        // files are still there.
+        let adopted = adopt::scan(&registry);
+        if !adopted.is_empty() {
+            tracing::info!(
+                count = adopted.len(),
+                "the checkpoints on the disk were adopted into the catalogue"
+            );
+        }
+        adopt::apply(&registry, &adopted);
 
         // The pool covers the unified memory of the machine; a quarter stays
         // available for the operating system and for transient allocations.
@@ -130,6 +152,7 @@ impl TtsService {
             installs: InstallTracker::default(),
             engines,
             llm,
+            adopted,
         }))
     }
 

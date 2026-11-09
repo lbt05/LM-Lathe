@@ -57,6 +57,19 @@ fn router(dir: &TempDir) -> axum::Router {
     lm_lathe_server::api::router(service, "127.0.0.1")
 }
 
+/// A model that offers the voice design, but whose checkpoint is not on the
+/// disk, so the preview of a new voice always fails.
+fn insert_model_without_a_checkpoint(service: &TtsService) {
+    let mut spec = tts_core::registry::TTSModelSpec::mock_spec();
+    spec.id = "mock-without-checkpoint".to_string();
+    spec.name = "Mock without a checkpoint".to_string();
+    spec.aliases = vec!["mock-without-checkpoint".to_string()];
+    // The checkpoint is expected on the disk for this mode, and it is not
+    // there, so the engine refuses to start.
+    spec.mode = tts_core::types::EngineMode::SglangOmni;
+    service.registry.insert(spec);
+}
+
 async fn get(router: axum::Router, uri: &str) -> (StatusCode, axum::body::Body) {
     let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
     let response = router.oneshot(request).await.unwrap();
@@ -210,6 +223,70 @@ async fn a_voice_is_designed_and_stored() {
     let json: serde_json::Value =
         serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(json["name"], "新名字");
+}
+
+#[tokio::test]
+async fn a_failed_design_leaves_no_profile_behind() {
+    let dir = TempDir::new("api");
+    let service = TtsService::with_paths(AppPaths::with_root(dir.path())).unwrap();
+    service
+        .registry
+        .insert(tts_core::registry::TTSModelSpec::mock_spec());
+    insert_model_without_a_checkpoint(&service);
+    let router = lm_lathe_server::api::router(service, "127.0.0.1");
+
+    // The preview fails, because the checkpoint of the model is missing.
+    let (status, body) = post_json(
+        router.clone(),
+        "/v1/tts/voices/design",
+        serde_json::json!({
+            "model": "mock-without-checkpoint",
+            "prompt": "青年女性，稚嫩、害羞、略带怯意",
+            "name": "没听过的声音",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert_ne!(json["message"].as_str().unwrap(), "");
+
+    // The profile of the failed design is gone again: a voice that was
+    // never heard is not worth keeping.
+    let (status, body) = get(router, "/v1/tts/voices").await;
+    assert_eq!(status, StatusCode::OK);
+    let voices: Vec<serde_json::Value> =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert!(voices.is_empty(), "the failed design left {} profiles", voices.len());
+}
+
+#[tokio::test]
+async fn a_failed_cloning_leaves_no_profile_behind() {
+    let dir = TempDir::new("api");
+    let service = TtsService::with_paths(AppPaths::with_root(dir.path())).unwrap();
+    service
+        .registry
+        .insert(tts_core::registry::TTSModelSpec::mock_spec());
+    insert_model_without_a_checkpoint(&service);
+    let router = lm_lathe_server::api::router(service, "127.0.0.1");
+
+    let (status, _) = post_json(
+        router.clone(),
+        "/v1/tts/voices/clone",
+        serde_json::json!({
+            "model": "mock-without-checkpoint",
+            "reference_audio": "/tmp/reference.wav",
+            "name": "没听过的克隆",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+
+    let (status, body) = get(router, "/v1/tts/voices").await;
+    assert_eq!(status, StatusCode::OK);
+    let voices: Vec<serde_json::Value> =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    assert!(voices.is_empty(), "the failed cloning left {} profiles", voices.len());
 }
 
 #[tokio::test]
@@ -407,6 +484,44 @@ async fn the_installation_progress_is_reported() {
         serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(json["state"], "idle");
     assert_eq!(json["model_id"], "mock-echo");
+}
+
+/// A checkpoint that is on the disk but not in the catalogue of the
+/// application is shown as downloaded, and it can be deleted again.
+#[tokio::test]
+async fn a_checkpoint_on_the_disk_is_shown_and_can_be_deleted() {
+    let dir = TempDir::new("api");
+    let checkpoint = dir.path().join("models/llm/unsloth--Qwen3.8-27B-GGUF");
+    std::fs::create_dir_all(&checkpoint).unwrap();
+    std::fs::write(
+        checkpoint.join("Qwen3.8-27B-UD-Q4_K_M.gguf"),
+        vec![0_u8; 64],
+    )
+    .unwrap();
+
+    let (status, body) = get(router(&dir), "/v1/tts/models").await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value =
+        serde_json::from_slice(&body.collect().await.unwrap().to_bytes()).unwrap();
+    let model = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["id"] == "unsloth--Qwen3.8-27B-GGUF")
+        .expect("the checkpoint is missing in the catalogue");
+    assert_eq!(model["installed"], true);
+    assert_eq!(model["family"], "llm");
+    assert_eq!(model["engine_id"], "llama.cpp");
+
+    // The checkpoint can be deleted again.
+    let (status, _) = post_json(
+        router(&dir),
+        "/v1/tts/models/unsloth--Qwen3.8-27B-GGUF/uninstall",
+        serde_json::json!({ "confirm": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(!checkpoint.exists());
 }
 
 #[tokio::test]

@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use tts_core::adopt;
+use tts_core::hub::HubClient;
 use tts_core::paths::AppPaths;
 use tts_core::service::TtsService;
 use tts_core::types::{
@@ -261,6 +263,17 @@ pub async fn run(cli: Cli) -> Result<()> {
 /// Starts the HTTP API server.
 async fn serve(service: std::sync::Arc<TtsService>, args: ServeArgs) -> Result<()> {
     let app = crate::api::router(service.clone(), &args.host);
+    // The checkpoints that were adopted from the disk are looked up in the
+    // hub, so that the interface knows their licence and the number of
+    // their parameters. The lookup runs in the background: a hub that
+    // cannot be reached must not keep the application from starting.
+    if !service.adopted.is_empty() {
+        let hub = HubClient::new();
+        let service = service.clone();
+        tokio::spawn(async move {
+            adopt::enrich(&hub, &service.registry, &service.adopted).await;
+        });
+    }
     let address = format!("{}:{}", args.host, args.port);
     let listener = tokio::net::TcpListener::bind(&address)
         .await

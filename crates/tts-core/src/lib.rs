@@ -12,6 +12,7 @@
 //! * [`audio`] stores, inspects and converts the generated audio.
 
 pub mod adapter;
+pub mod adopt;
 pub mod audio;
 pub mod engine_assets;
 pub mod error;
@@ -26,6 +27,7 @@ pub mod service;
 pub mod types;
 pub mod voice;
 
+pub use adopt::AdoptedCheckpoint;
 pub use audio::{AudioInfo, AudioManager};
 pub use engine_assets::{
     engine_definition, engine_definitions, EngineAsset, EngineDefinition, EngineDistribution,
