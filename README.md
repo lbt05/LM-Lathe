@@ -15,7 +15,7 @@
 | **运行时** | 4 个引擎当作真实资产管理：安装、切换版本、卸载、健康检查（真启动服务探 `/health`） |
 | **加载** | 按需加载 / 卸载 / 固定；全局调度器按内存占用分配，LRU + TTL 自动回收 |
 | **语音** | `POST /v1/audio/speech`（OpenAI 兼容），支持 Qwen3-TTS 的声音设计与克隆、Drama 3 的多角色 |
-| **对话** | `POST /v1/chat/completions`、`/v1/completions`（OpenAI 兼容），llama.cpp 跑 GGUF |
+| **对话** | `POST /v1/chat/completions`、`/v1/completions`（OpenAI 兼容），llama.cpp 跑 GGUF，Apple Silicon 上 mlx-lm 跑 MLX 的 safetensors |
 | **声音库** | 声音档案存本地，附试听样本；声音设计与克隆走 API 或 CLI |
 | **可观测** | 每个模型的引擎日志，下载进度，运行实例状态，全局调度快照 |
 
@@ -88,10 +88,16 @@ npm run tauri:build            # 打包 .app
 ```
 LM-Lathe.app/Contents/MacOS/
 ├── lm-lathe          8.7 MB   窗口程序，前端（dist/）已经嵌进去
-└── lm-lathe-server   8.2 MB   后端，作为 sidecar 一起打包
+├── lm-lathe-server   8.2 MB   后端，作为 sidecar 一起打包
+└── uv               26.5 MB   安装 Python 引擎用的工具，同样随包分发
 ```
 
-把这个 `.app` 拷到别的 Mac 上就能跑——不需要 Rust，也不需要 Node。只有模型权重需要另外下载。
+把这个 `.app` 拷到别的 Mac 上就能跑——不需要 Rust，也不需要 Node。用户也不用先装
+`uv` 之类的工具：安装引擎时用到的工具都在包里。只有模型权重需要另外下载。
+
+`uv` 的版本写死在 `scripts/sync-sidecar.mjs` 里（`LM_LATHE_UV_VERSION` 可以改）。它
+是单个静态二进制，直接下载对应平台的 release；已经下过的不会重复下载，所以没有网
+络也能打包。
 
 ---
 
@@ -180,12 +186,22 @@ curl -X POST http://127.0.0.1:54321/v1/chat/completions \
 │   ├── llm/                 GGUF 权重
 │   └── tts/                 TTS 权重
 ├── runtimes/engines/        引擎的安装目录 + engines.json（当前版本）
+├── runtimes/python/         uv 管理的 Python 解释器
+├── cache/uv/                uv 的下载缓存
 ├── voices/<voice_id>/       profile.json + samples/
 ├── audio/generated/         生成的音频
 └── logs/{tts,llm}/          引擎日志
 ```
 
 网关固定监听 `54321`，`LMLATHE_PORT` 可改。端口被同一份构建占着时，桌面端直接复用它；被别的构建占着时，桌面端换到下一个空闲端口并显示自己用的地址。
+
+### 磁盘上的检查点就是真相
+
+模型目录（catalogue）活在服务进程的内存里：内置的模型，加上搜索 Hugging Face 时找到的模型。搜索到的模型只在下载的那一刻进了目录，之后没人把它写下来——服务一重启就忘了它，文件还在盘上，界面却当它从没下过。
+
+所以每次启动都会扫一遍 `models/tts` 和 `models/llm`：目录里有权重、而目录里没有的检查点会被重新收编回目录，重新认得出、能加载、也能删掉。仓库名从目录名反推（`--` 还原成 `/`），格式看盘上的文件（`.gguf` 是 llama.cpp 跑的语言模型，`.safetensors` 是语音模型，或者是 mlx-lm 跑的语言模型——看 `config.json` 里有没有量化信息就知道），启动后再去 Hugging Face 补上许可和参数量这些只有 Hub 才知道的东西。补不上也不影响——离线时它照样在列表里。
+
+下载到一半的目录（只有 `.part` 文件）不算模型：它归下载进度管。
 
 ---
 
