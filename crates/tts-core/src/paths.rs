@@ -107,6 +107,25 @@ impl AppPaths {
         self.runtimes_root().join("engines")
     }
 
+    /// `runtimes/python/`
+    ///
+    /// The Python interpreters that `uv` manages live here, next to the
+    /// engines that use them. The application owns them, so that nothing
+    /// lands in the home directory of the user outside of the data
+    /// directory.
+    pub fn python_root(&self) -> PathBuf {
+        self.runtimes_root().join("python")
+    }
+
+    /// `cache/uv/`
+    ///
+    /// The cache of `uv` belongs to the application as well: the wheels that
+    /// were downloaded are reused, and they are removed with the data
+    /// directory.
+    pub fn uv_cache_root(&self) -> PathBuf {
+        self.root.join("cache").join("uv")
+    }
+
     /// `logs/tts/`
     pub fn tts_logs_root(&self) -> PathBuf {
         self.logs_root().join("tts")
@@ -131,6 +150,8 @@ impl AppPaths {
             self.llm_logs_root(),
             self.runtimes_root(),
             self.engines_root(),
+            self.python_root(),
+            self.uv_cache_root(),
         ] {
             std::fs::create_dir_all(&dir).map_err(|e| TtsError::io(&dir, e))?;
         }

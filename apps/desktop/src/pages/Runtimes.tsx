@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   formatBytes,
   formatDate,
   type EngineAsset,
   type EngineHealth,
-  type EngineInstallProgress,
   type EngineVersion,
 } from "../api";
 import { useStore } from "../store";
@@ -39,45 +38,13 @@ const TTS_ENGINES = ["sglang-omni", "sglang-omni-mlx", "mlx-audio"];
 
 export default function Runtimes() {
   const store = useStore();
-  const [progress, setProgress] = useState<Record<string, EngineInstallProgress>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<string | null>(null);
 
-  // The installation runs in the backend, the progress is polled.
-  useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      const entries = await Promise.all(
-        store.engines.map(async (engine) => {
-          try {
-            return await api.engineInstallProgress(engine.id);
-          } catch {
-            return null;
-          }
-        }),
-      );
-      if (cancelled) return;
-      const next: Record<string, EngineInstallProgress> = {};
-      for (const entry of entries) if (entry) next[entry.engine_id] = entry;
-      setProgress(next);
-    };
-    void tick();
-    const timer = window.setInterval(tick, 1200);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [store.engines]);
-
-  // A finished installation refreshes the engine list.
-  const finished = Object.values(progress).filter(
-    (entry) => entry.state === "done" || entry.state === "failed",
-  );
-  useEffect(() => {
-    if (!finished.length) return;
-    const timer = window.setTimeout(() => void store.refresh(), 600);
-    return () => window.clearTimeout(timer);
-  }, [finished.length, store]);
+  // The installation of an engine runs in the backend. The store polls the
+  // progress of the engines that are being installed and refreshes the list
+  // of the engines when an installation is finished.
+  const progress = store.engineProgress;
 
   const checkHealth = useCallback(
     async (engine: EngineAsset) => {
@@ -137,23 +104,34 @@ export default function Runtimes() {
           }
         />
 
-        {/* The installation of an engine is shown while it runs. */}
+        {/* The installation of an engine is shown while it runs, and the
+            reason of a failed one stays on the page. */}
         {Object.values(progress)
-          .filter((entry) => entry.state === "running")
+          .filter(
+            (entry) => entry.state === "running" || entry.state === "failed",
+          )
           .map((entry) => (
             <div className="qrow" key={entry.engine_id}>
               <span className="cellstack">
-                <span className="name">安装 {entry.engine_id} {entry.version}</span>
-                <span className="qrow__meter">
-                  <Meter
-                    percent={entry.percent ?? 0}
-                    kind={TTS_ENGINES.includes(entry.engine_id) ? "tts" : "llm"}
-                  />
+                <span className="name">
+                  {entry.state === "failed"
+                    ? `安装 ${entry.engine_id} ${entry.version} 失败`
+                    : `安装 ${entry.engine_id} ${entry.version}`}
                 </span>
-                <span className="sub">{entry.message}</span>
+                {entry.state === "running" ? (
+                  <span className="qrow__meter">
+                    <Meter
+                      percent={entry.percent ?? 0}
+                      kind={TTS_ENGINES.includes(entry.engine_id) ? "tts" : "llm"}
+                    />
+                  </span>
+                ) : null}
+                <span className="sub">{entry.error ?? entry.message}</span>
               </span>
               <span className="qrow__pct">
-                {entry.percent !== null ? `${entry.percent.toFixed(0)}%` : "…"}
+                {entry.state !== "running"
+                  ? "—"
+                  : `${entry.percent !== null ? `${entry.percent.toFixed(0)}%` : "…"}`}
                 {entry.total_bytes
                   ? ` · ${formatBytes(entry.bytes)} / ${formatBytes(entry.total_bytes)}`
                   : ""}
@@ -220,6 +198,9 @@ export default function Runtimes() {
                       <td>
                         <Tag tone={status.tone}>{status.label}</Tag>
                         {running ? <Tag tone="info">安装中</Tag> : null}
+                        {progress[engine.id]?.state === "failed" ? (
+                          <Tag tone="bad">安装失败</Tag>
+                        ) : null}
                       </td>
                       <td>
                         <span className="sub">{engine.capabilities.join(" / ")}</span>
@@ -463,27 +444,14 @@ export function RuntimeInspector({ id, tab }: { id: string; tab: string }) {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string>("");
   const [health, setHealth] = useState<EngineHealth | null>(null);
-  const [progress, setProgress] = useState<EngineInstallProgress | null>(null);
 
-  // The installation output is polled, so that the log of a running
-  // installation is visible while it works.
-  useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const next = await api.engineInstallProgress(id);
-        if (!cancelled) setProgress(next);
-      } catch {
-        /* the backend is not reachable */
-      }
-    };
-    void tick();
-    const timer = window.setInterval(() => void tick(), 2000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [id]);
+  // The store polls the progress of the engines that are being installed,
+  // so that the log of a running installation is visible while it works.
+  const progress = store.engineProgress[id] ?? null;
+
+  // The versions of an engine are fetched once. A failure is not retried in
+  // a loop: the user asks for them again with the button below.
+  const asked = useRef<string | null>(null);
 
   const loadVersions = useCallback(async () => {
     setLoading(true);
@@ -501,8 +469,11 @@ export function RuntimeInspector({ id, tab }: { id: string; tab: string }) {
   }, [id]);
 
   useEffect(() => {
-    if (tab === "versions" && versions === null && !loading) void loadVersions();
-  }, [tab, versions, loading, loadVersions]);
+    if (tab !== "versions") return;
+    if (asked.current === id) return;
+    asked.current = id;
+    void loadVersions();
+  }, [tab, id, loadVersions]);
 
   if (!engine) {
     return (
@@ -516,15 +487,7 @@ export function RuntimeInspector({ id, tab }: { id: string; tab: string }) {
   const status = ENGINE_STATUS[engine.status] ?? ENGINE_STATUS.available;
 
   const doInstall = async (version?: string) => {
-    try {
-      await api.installEngine(engine.id, version);
-      store.log("info", `开始安装 ${engine.name}${version ? ` ${version}` : ""}`);
-      store.notify(`开始安装 ${engine.name}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      store.log("bad", `安装失败：${message}`);
-      store.notify(message, "bad");
-    }
+    await store.startEngineInstall(engine.id, version);
   };
 
   const doHealth = async () => {
@@ -814,6 +777,12 @@ export function RuntimeInspector({ id, tab }: { id: string; tab: string }) {
       {tab === "logs" ? (
         <>
           <Eyebrow>安装日志</Eyebrow>
+          {progress?.error ? (
+            <Note title="安装失败" tone="bad">
+              <p>{progress.error}</p>
+              {progress.version ? <p>版本 {progress.version}</p> : null}
+            </Note>
+          ) : null}
           <div className="term">
             <span className="term__line">
               {engine.installed.length

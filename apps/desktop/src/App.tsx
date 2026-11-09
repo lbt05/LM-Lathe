@@ -5,6 +5,7 @@ import Models, { ModelInspector } from "./pages/Models";
 import Runtimes, { RuntimeInspector } from "./pages/Runtimes";
 import Services, { ServiceInspector } from "./pages/Services";
 import Settings from "./pages/Settings";
+import Voices, { VoiceInspector } from "./pages/Voices";
 
 /** The navigation entries, grouped exactly like the design export. */
 const NAV: {
@@ -16,6 +17,7 @@ const NAV: {
 }[] = [
   { id: "models", label: "模型", icon: "cube", group: "资产" },
   { id: "runtime", label: "运行时", icon: "layers", group: "资产" },
+  { id: "voices", label: "声音", icon: "mic", group: "资产" },
   {
     id: "services",
     label: "服务",
@@ -29,6 +31,7 @@ const NAV: {
 const PAGES: Record<View, { title: string; sub: string }> = {
   models: { title: "模型", sub: "MODELS" },
   runtime: { title: "运行时", sub: "ENGINES" },
+  voices: { title: "声音", sub: "VOICES" },
   services: { title: "服务", sub: "ENDPOINTS" },
   settings: { title: "设置", sub: "PREFERENCES" },
 };
@@ -162,6 +165,7 @@ function Shell() {
               <Models query={query} onQueryChange={setQuery} />
             )}
             {store.view === "runtime" && <Runtimes />}
+            {store.view === "voices" && <Voices />}
             {store.view === "services" && <Services />}
             {store.view === "settings" && <Settings />}
           </div>
@@ -174,7 +178,16 @@ function Shell() {
             <ModelInspector id={store.inspector.id} tab={store.inspector.tab} />
           )}
           {store.inspector.kind === "runtime" && (
-            <RuntimeInspector id={store.inspector.id} tab={store.inspector.tab} />
+            // The key makes the inspector start again when another engine
+            // is picked: the versions of the old one would stay in the list.
+            <RuntimeInspector
+              key={store.inspector.id}
+              id={store.inspector.id}
+              tab={store.inspector.tab}
+            />
+          )}
+          {store.inspector.kind === "voice" && (
+            <VoiceInspector id={store.inspector.id} tab={store.inspector.tab} />
           )}
           {store.inspector.kind === "service" && (
             <ServiceInspector id={store.inspector.id} tab={store.inspector.tab} />

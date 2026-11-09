@@ -954,7 +954,22 @@ async fn design_voice(
         .await?;
 
     let (sample, sample_path) =
-        render_preview(&state, &spec, &voice, request.sample_text.as_deref()).await?;
+        match render_preview(&state, &spec, &voice, request.sample_text.as_deref()).await {
+            Ok(preview) => preview,
+            Err(err) => {
+                // A voice profile without a sample is of no use to anyone.
+                // The profile is removed, so the caller gets the real reason
+                // instead of an empty archive entry.
+                if let Err(cleanup) = state.service.library.delete(&voice.id).await {
+                    tracing::warn!(
+                        voice = %voice.id,
+                        error = %cleanup,
+                        "the profile of a failed voice design could not be removed"
+                    );
+                }
+                return Err(err);
+            }
+        };
     Ok((
         StatusCode::CREATED,
         axum::Json(VoiceCreationResult {
@@ -1014,7 +1029,21 @@ async fn clone_voice(
         .await?;
 
     let (sample, sample_path) =
-        render_preview(&state, &spec, &voice, request.sample_text.as_deref()).await?;
+        match render_preview(&state, &spec, &voice, request.sample_text.as_deref()).await {
+            Ok(preview) => preview,
+            Err(err) => {
+                // The profile goes away with the failed preview; a voice
+                // that was never heard is not worth keeping.
+                if let Err(cleanup) = state.service.library.delete(&voice.id).await {
+                    tracing::warn!(
+                        voice = %voice.id,
+                        error = %cleanup,
+                        "the profile of a failed voice cloning could not be removed"
+                    );
+                }
+                return Err(err);
+            }
+        };
     Ok((
         StatusCode::CREATED,
         axum::Json(VoiceCreationResult {

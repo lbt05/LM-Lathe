@@ -159,6 +159,11 @@ pub struct EngineDefinition {
     /// llama.cpp publishes its binaries as `b<build>` tags and marks them as
     /// pre-releases, although they are the stable channel.
     pub build_tags: Vec<String>,
+    /// The path the health check probes.
+    ///
+    /// Most engines answer `/health`. mlx-audio serves an OpenAI compatible
+    /// API that has no such path, so the probe asks it for the model list.
+    pub health_path: Option<String>,
     /// The program of the managed installation that serves a model engine id.
     ///
     /// The native MLX runtime ships one server per model family, the id of
@@ -269,6 +274,7 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
             model_engine_ids: vec!["llama.cpp".to_string()],
             managed_model_engine_ids: vec!["llama.cpp".to_string()],
             build_tags: vec!["b".to_string()],
+            health_path: None,
             model_programs: Vec::new(),
         },
         EngineDefinition {
@@ -289,13 +295,21 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
             deliveries: vec![PlatformDelivery {
                 package: Some("mlx-lm".to_string()),
                 program_path: Some("venv/bin/mlx_lm.server".to_string()),
-                requirements: vec!["python3".to_string()],
-                note: Some("PyPI 发行版，装进独立的虚拟环境；TTS 模型不在这个运行时里。".to_string()),
+                // mlx-lm needs Python 3.11 or newer. The Python of the machine
+                // is often older, so `uv` builds the environment with the
+                // version the package asks for.
+                python_version: Some("3.12".to_string()),
+                requirements: vec!["uv".to_string()],
+                note: Some(
+                    "PyPI 发行版，装进独立的 Python 3.12 虚拟环境；TTS 模型不在这个运行时里。"
+                        .to_string(),
+                ),
                 ..delivery(&["darwin-arm64"], EngineDistribution::PythonPackage)
             }],
             model_engine_ids: Vec::new(),
             managed_model_engine_ids: Vec::new(),
             build_tags: Vec::new(),
+            health_path: None,
             model_programs: Vec::new(),
         },
         EngineDefinition {
@@ -322,7 +336,9 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
             deliveries: vec![PlatformDelivery {
                 package: Some("sglang-omni".to_string()),
                 program_path: Some("venv/bin/sgl-omni".to_string()),
-                requirements: vec!["uv".to_string()],
+                // The wheel is built for the Python of the machine, so the
+                // environment is made with `python3 -m venv`.
+                requirements: vec!["python3".to_string()],
                 note: Some("CUDA 路径：PyPI 发行版（wheel 带 CUDA 依赖），需要 CUDA 运行时。".to_string()),
                 ..delivery(
                     &["linux-x64", "linux-arm64"],
@@ -332,6 +348,7 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
             model_engine_ids: vec!["sglang-omni".to_string()],
             managed_model_engine_ids: vec!["sglang-omni".to_string()],
             build_tags: Vec::new(),
+            health_path: None,
             model_programs: Vec::new(),
         },
         EngineDefinition {
@@ -376,6 +393,7 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
             model_engine_ids: vec!["mlx-audio".to_string()],
             managed_model_engine_ids: vec!["mlx-audio".to_string()],
             build_tags: Vec::new(),
+            health_path: Some("/v1/models".to_string()),
             model_programs: Vec::new(),
         },
         EngineDefinition {
@@ -437,6 +455,7 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
                 "sglang-omni-mlx".to_string(),
             ],
             build_tags: Vec::new(),
+            health_path: None,
             model_programs: vec![
                 (
                     "fishaudio-drama3-mlx".to_string(),
@@ -1180,6 +1199,12 @@ impl EngineAssetManager {
         version: &str,
         target: &Path,
     ) -> TtsResult<Option<PathBuf>> {
+        let delivery = definition.delivery_here().cloned();
+        // The tools the delivery needs have to be there before it starts. A
+        // missing `uv` is otherwise reported as a mysterious "No such file or
+        // directory" when the virtual environment is created.
+        check_requirements(definition, delivery.as_ref())?;
+
         let package = definition
             .delivery_here()
             .and_then(|delivery| delivery.package.clone())
@@ -1206,6 +1231,20 @@ impl EngineAssetManager {
             .delivery_here()
             .and_then(|delivery| delivery.python_version.clone());
         let uv = uv_command();
+        // A named Python version is only available through `uv`: it manages
+        // the interpreters itself. Without it the installation would use the
+        // Python of the machine, which is often too old for the wheels of
+        // the package.
+        if python_version.is_some() && find_in_path(&uv).is_none() {
+            let hint = tool_hint(&uv).map(|hint| format!("（{hint}）")).unwrap_or_default();
+            return Err(TtsError::IncompatibleHardware {
+                model: definition.name.clone(),
+                reason: format!(
+                    "缺少 {uv}，请先安装后再试{hint}，它负责准备 Python {}",
+                    python_version.clone().unwrap_or_default()
+                ),
+            });
+        }
         if let Some(version) = &python_version {
             let status = Command::new(&uv)
                 .arg("venv")
@@ -1246,7 +1285,7 @@ impl EngineAssetManager {
             progress.message = format!("安装 {requirement}");
             progress.percent = Some(25.0);
         });
-        let mut install = Command::new(&uv);
+        let mut install = self.uv_command(&uv);
         if python_version.is_some() {
             // The environment of `uv` has no pip, the package is installed
             // with `uv pip` into it.
@@ -1326,14 +1365,7 @@ impl EngineAssetManager {
             .ok_or_else(|| TtsError::Internal(format!("引擎 `{}` 没有安装脚本", definition.id)))?;
 
         // The tools the script needs have to be there before it starts.
-        for requirement in &delivery.requirements {
-            if find_in_path(requirement).is_none() && !requirement.contains("python") {
-                return Err(TtsError::IncompatibleHardware {
-                    model: definition.name.clone(),
-                    reason: format!("缺少 {requirement}，请先安装后再试"),
-                });
-            }
-        }
+        check_requirements(definition, Some(delivery))?;
 
         self.update_progress(&definition.id, |progress| {
             progress.message = format!("下载源码 {version}");
@@ -1607,6 +1639,25 @@ impl EngineAssetManager {
         path.to_path_buf()
     }
 
+    /// A command that runs `uv`.
+    ///
+    /// The cache of `uv` and the Python interpreters it manages live in the
+    /// data directory of the application, so that nothing lands in the home
+    /// directory of the user outside of it. The interpreters are always the
+    /// managed ones: the Python of the machine is often too old for the
+    /// wheels of the packages.
+    fn uv_command(&self, uv: &str) -> Command {
+        let mut command = Command::new(uv);
+        command
+            .env("UV_CACHE_DIR", self.paths.uv_cache_root())
+            .env("UV_PYTHON_INSTALL_DIR", self.paths.python_root())
+            .env("UV_PYTHON_PREFERENCE", "only-managed")
+            // The output of `uv` goes into the installation log, a progress
+            // bar would only mix itself into it.
+            .env("UV_NO_PROGRESS", "1");
+        command
+    }
+
     /// The directory of the managed installation that is active.
     fn managed_dir(&self, definition: &EngineDefinition) -> Option<PathBuf> {
         let manifest = self.manifest.lock().unwrap_or_else(|e| e.into_inner());
@@ -1659,6 +1710,12 @@ impl EngineAssetManager {
     /// Marks an installation as failed.
     fn fail_install(&self, engine_id: &str, version: &str, error: String) {
         let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        // The log of the installation is kept: it holds the output of the
+        // tool that failed, which is the reason of the failure.
+        let log = progress
+            .get(engine_id)
+            .map(|entry| entry.log.clone())
+            .unwrap_or_default();
         progress.insert(
             engine_id.to_string(),
             EngineInstallProgress {
@@ -1669,7 +1726,7 @@ impl EngineAssetManager {
                 bytes: 0,
                 total_bytes: None,
                 message: format!("安装失败：{error}"),
-                log: Vec::new(),
+                log,
                 error: Some(error.clone()),
             },
         );
@@ -1819,6 +1876,12 @@ fn find_in_path(program: &str) -> Option<PathBuf> {
     if program.is_empty() {
         return None;
     }
+    // A program that is named with a path is used as it is: the environment
+    // can point at a tool that is not on the `PATH`.
+    if program.contains('/') {
+        let path = PathBuf::from(program);
+        return if path.is_file() { Some(path) } else { None };
+    }
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(program);
@@ -1827,6 +1890,61 @@ fn find_in_path(program: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Checks that the tools a delivery needs are on the `PATH`.
+///
+/// A tool that is missing is reported by its name, instead of the process
+/// failing later with a bare "No such file or directory".
+fn check_requirements(
+    definition: &EngineDefinition,
+    delivery: Option<&PlatformDelivery>,
+) -> TtsResult<()> {
+    let Some(delivery) = delivery else {
+        return Ok(());
+    };
+    for requirement in &delivery.requirements {
+        // A Python interpreter is named loosely: the installation falls back
+        // to `python3` and tells the version it found.
+        if requirement.contains("python") {
+            continue;
+        }
+        let command = tool_command(requirement);
+        if find_in_path(&command).is_none() {
+            let reason = match tool_hint(requirement) {
+                Some(hint) => format!("缺少 {requirement}，请先安装后再试（{hint}）"),
+                None => format!("缺少 {requirement}，请先安装后再试"),
+            };
+            return Err(TtsError::IncompatibleHardware {
+                model: definition.name.clone(),
+                reason,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The command that runs a tool.
+///
+/// The environment can point at a tool that is not on the `PATH`, so the
+/// check looks for the command that is really used.
+fn tool_command(tool: &str) -> String {
+    match tool {
+        "uv" => uv_command(),
+        "python" | "python3" => python_command(),
+        other => other.to_string(),
+    }
+}
+
+/// The command that installs a tool on this platform.
+fn tool_hint(tool: &str) -> Option<&'static str> {
+    match tool {
+        "uv" => Some("brew install uv"),
+        "clang" => Some("xcode-select --install"),
+        "cmake" => Some("brew install cmake"),
+        "ninja" => Some("brew install ninja"),
+        _ => None,
+    }
 }
 
 /// The size of a directory in bytes.
@@ -2007,7 +2125,11 @@ pub async fn probe_engine(
         }
     };
 
-    let endpoint = format!("http://127.0.0.1:{port}/health");
+    let path = definition
+        .health_path
+        .clone()
+        .unwrap_or_else(|| "/health".to_string());
+    let endpoint = format!("http://127.0.0.1:{port}{path}");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -2024,14 +2146,20 @@ pub async fn probe_engine(
         match client.get(&endpoint).send().await {
             Ok(response) if response.status().is_success() => {
                 status = "healthy".to_string();
-                detail = format!("{} 响应正常。", endpoint);
+                detail = format!("{endpoint} 响应正常。");
+                break;
+            }
+            Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
+                // The service answers, but the path does not exist. Waiting
+                // for it would only waste the time of the user.
+                detail = format!("{endpoint} 不存在，服务没有这个路径。");
                 break;
             }
             Ok(response) => {
-                detail = format!("{} 返回 {}。", endpoint, response.status());
+                detail = format!("{endpoint} 返回 {}。", response.status());
             }
             Err(_) => {
-                detail = format!("等待 {} 响应……", endpoint);
+                detail = format!("等待 {endpoint} 响应……");
             }
         }
         tokio::time::sleep(Duration::from_millis(750)).await;
@@ -2177,5 +2305,66 @@ mod list_tests {
         assert!(listed.contains(&"llama.cpp".to_string()));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod requirement_tests {
+    use super::{check_requirements, engine_definition};
+    use crate::error::TtsError;
+
+    /// A tool that is not on the machine is named in the error, so that the
+    /// user knows what has to be installed before the installation starts.
+    #[test]
+    fn a_missing_tool_is_named_in_the_error() {
+        let definition = engine_definition("mlx-audio").expect("the engine is known");
+        let mut delivery = definition
+            .delivery_here()
+            .expect("the delivery of the engine is known")
+            .clone();
+        delivery.requirements = vec!["a-tool-that-is-not-there".to_string()];
+
+        let error = check_requirements(&definition, Some(&delivery))
+            .expect_err("the tool is missing");
+        assert!(
+            matches!(error, TtsError::IncompatibleHardware { .. }),
+            "the error names the missing tool: {error}"
+        );
+        assert!(
+            error.to_string().contains("a-tool-that-is-not-there"),
+            "the error names the missing tool: {error}"
+        );
+    }
+
+    /// The Python packages of Apple Silicon are installed with `uv`, which
+    /// prepares the Python version of the delivery. The engine says so.
+    #[test]
+    fn the_mlx_audio_delivery_needs_uv() {
+        let definition = engine_definition("mlx-audio").expect("the engine is known");
+        let delivery = definition
+            .delivery_here()
+            .expect("the delivery of the engine is known");
+        assert!(
+            delivery.requirements.iter().any(|tool| tool == "uv"),
+            "the delivery names uv: {:?}",
+            delivery.requirements
+        );
+        assert_eq!(
+            delivery.python_version.as_deref(),
+            Some("3.12"),
+            "the delivery names the Python version"
+        );
+    }
+
+    /// mlx-audio serves an OpenAI compatible API without a `/health` path,
+    /// so the probe asks it for the model list.
+    #[test]
+    fn the_probe_of_mlx_audio_asks_for_the_model_list() {
+        let definition = engine_definition("mlx-audio").expect("the engine is known");
+        assert_eq!(
+            definition.health_path.as_deref(),
+            Some("/v1/models"),
+            "the probe uses a path that the server answers"
+        );
     }
 }

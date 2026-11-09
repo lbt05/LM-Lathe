@@ -124,6 +124,45 @@ fn platform_triple() -> &'static str {
     }
 }
 
+/// Finds a tool that travels with the application.
+///
+/// The tools are sidecars: they sit next to the executable of the
+/// application, and depending on the platform also in the resource
+/// directory.
+fn bundled_tool(app: &AppHandle, name: &str) -> Option<PathBuf> {
+    let triple = format!("{}-{}", std::env::consts::ARCH, platform_triple());
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(directory) = app.path().resource_dir() {
+        candidates.push(directory.join("binaries").join(format!("{name}-{triple}")));
+        candidates.push(directory.join("binaries").join(name));
+        candidates.push(directory.join(format!("{name}-{triple}")));
+        candidates.push(directory.join(name));
+        if let Some(parent) = directory.parent() {
+            candidates.push(parent.join("MacOS").join(name));
+        }
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            candidates.push(directory.join(name));
+            candidates.push(directory.join(format!("{name}-{triple}")));
+        }
+    }
+    candidates.into_iter().find(|candidate| candidate.exists())
+}
+
+/// The directory that holds the tools of the application.
+///
+/// It is put in front of the `PATH` of the backend, so that the tools that
+/// travel with the application win over the ones of the system.
+fn tool_directory() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let directory = executable.parent()?.to_path_buf();
+    if directory.join("uv").exists() {
+        return Some(directory);
+    }
+    None
+}
+
 /// Picks a free TCP port.
 /// The port the backend listens on.
 ///
@@ -307,6 +346,21 @@ pub async fn start_server(
 
     // The backend follows the life cycle of this process.
     command.env("TTS_SERVER_EXIT_ON_STDIN_EOF", "1");
+
+    // The tools that travel with the application are used first: the user
+    // does not have to install anything before an engine can be installed.
+    if let Some(uv) = bundled_tool(&app, "uv") {
+        command.env("LM_LATHE_UV", &uv);
+    }
+    if let Some(directory) = tool_directory() {
+        let path = std::env::var("PATH").unwrap_or_default();
+        let path = if path.is_empty() {
+            directory.display().to_string()
+        } else {
+            format!("{}:{}", directory.display(), path)
+        };
+        command.env("PATH", path);
+    }
 
     // The output of the backend ends up in the log directory, so the user can
     // see what the server does.

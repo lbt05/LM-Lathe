@@ -20,21 +20,24 @@ import {
   api,
   setBaseUrl,
   type EngineAsset,
+  type EngineInstallProgress,
   type Install,
   type Model,
   type Paths,
   type Route,
   type Runtime,
   type Status,
+  type Voice,
 } from "./api";
 
-/** The four top level views of the application. */
-export type View = "models" | "runtime" | "services" | "settings";
+/** The five top level views of the application. */
+export type View = "models" | "runtime" | "voices" | "services" | "settings";
 
 /** What the inspector shows. */
 export type Inspector =
   | { kind: "model"; id: string; tab: string }
   | { kind: "runtime"; id: string; tab: string }
+  | { kind: "voice"; id: string; tab: string }
   | { kind: "service"; id: string; tab: string }
   | null;
 
@@ -92,7 +95,15 @@ interface Store {
   models: Model[];
   status: Status | null;
   engines: EngineAsset[];
+  /** The progress of the engine installations that ran on this machine. */
+  engineProgress: Record<string, EngineInstallProgress>;
+  /** The engines whose installation runs at the moment. */
+  installing: string[];
+  /** Starts the installation of an engine version. */
+  startEngineInstall: (id: string, version?: string) => Promise<void>;
   routes: Route[];
+  /** The voice profiles that are stored on the disk. */
+  voices: Voice[];
   refresh: () => Promise<void>;
   /** Every running model, speech and language alike. */
   instances: Runtime[];
@@ -128,7 +139,7 @@ const THEME_KEY = "lmlathe.theme";
 const BACKEND_KEY = "lmlathe.backend";
 const BIND_KEY = "lmlathe.bind";
 
-const VIEWS: View[] = ["models", "runtime", "services", "settings"];
+const VIEWS: View[] = ["models", "runtime", "voices", "services", "settings"];
 
 /** Reads the view from the location hash, e.g. `#/services`. */
 function viewFromHash(): View {
@@ -154,7 +165,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [paths, setPaths] = useState<Paths | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [engines, setEngines] = useState<EngineAsset[]>([]);
+  const [engineProgress, setEngineProgress] = useState<
+    Record<string, EngineInstallProgress>
+  >({});
+  const [installing, setInstalling] = useState<string[]>([]);
   const [routes, setRoutes] = useState<Route[]>([]);
+  const [voices, setVoices] = useState<Voice[]>([]);
   const [inspector, setInspector] = useState<Inspector>(null);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -222,7 +238,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextModels, nextStatus, nextEngines, nextRoutes, nextPaths] =
+      const [
+        nextModels,
+        nextStatus,
+        nextEngines,
+        nextRoutes,
+        nextPaths,
+        nextVoices,
+      ] =
         await Promise.all([
           api.models(),
           api.status(),
@@ -238,16 +261,123 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             reportMissing("目录设置", err);
             return null as Paths | null;
           }),
+          api.voices().catch((err) => {
+            reportMissing("声音库", err);
+            return [] as Voice[];
+          }),
         ]);
       setModels(nextModels);
       setStatus(nextStatus);
       setEngines(nextEngines);
       setRoutes(nextRoutes);
       setPaths(nextPaths);
+      setVoices(nextVoices);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, [reportMissing]);
+
+  const startEngineInstall = useCallback(
+    async (id: string, version?: string) => {
+      const name = engines.find((engine) => engine.id === id)?.name ?? id;
+      try {
+        await api.installEngine(id, version);
+        setInstalling((current) =>
+          current.includes(id) ? current : [...current, id],
+        );
+        setEngineProgress((current) => ({
+          ...current,
+          [id]: {
+            engine_id: id,
+            version: version ?? "",
+            state: "running",
+            percent: 0,
+            bytes: 0,
+            total_bytes: null,
+            message: "准备安装",
+            log: [],
+          },
+        }));
+        log("info", `开始安装 ${name}${version ? ` ${version}` : ""}`);
+        notify(`开始安装 ${name}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log("bad", `安装失败：${message}`);
+        notify(message, "bad");
+      }
+    },
+    [engines, log, notify],
+  );
+
+  // The installation of an engine runs in the backend. Its progress is
+  // polled while it runs, and the list of the engines is refreshed when it
+  // is finished. The poll only asks for the engines that are being
+  // installed: a request per engine and per second would keep the service
+  // busy for nothing.
+  const installingKey = installing.join(",");
+  useEffect(() => {
+    if (!installingKey) return;
+    let cancelled = false;
+    const ids = installingKey.split(",").filter(Boolean);
+    const tick = async () => {
+      const entries = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            return await api.engineInstallProgress(id);
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (cancelled) return;
+      const next: Record<string, EngineInstallProgress> = {};
+      for (const entry of entries) if (entry) next[entry.engine_id] = entry;
+      if (Object.keys(next).length) {
+        setEngineProgress((current) => ({ ...current, ...next }));
+      }
+      // A finished installation is not polled any more: the error of a
+      // failed one is shown once, and the list of the engines is refreshed.
+      const finished = entries.filter(
+        (entry) =>
+          entry && (entry.state === "done" || entry.state === "failed"),
+      );
+      // The service does not answer any more: the installation cannot
+      // continue, so the engine is not watched any longer.
+      const lost = ids.filter(
+        (id) => !entries.some((entry) => entry?.engine_id === id),
+      );
+      if (lost.length) {
+        log("warn", `安装进度中断：${lost.join("、")}`);
+        setInstalling((current) =>
+          current.filter((id) => !lost.includes(id)),
+        );
+      }
+      if (!finished.length) return;
+      setInstalling((current) =>
+        current.filter(
+          (id) => !finished.some((entry) => entry?.engine_id === id),
+        ),
+      );
+      for (const entry of finished) {
+        if (!entry) continue;
+        if (entry.state === "done") {
+          log("ok", `${entry.engine_id} ${entry.version} 安装完成`);
+          notify(`${entry.engine_id} ${entry.version} 安装完成`, "ok");
+        } else {
+          const message = entry.error ?? entry.message;
+          log("bad", `${entry.engine_id} 安装失败：${message}`);
+          notify(message, "bad");
+        }
+      }
+      await refresh();
+    };
+    void tick();
+    const timer = window.setInterval(tick, 1200);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [installingKey, log, notify, refresh]);
 
   const connect = useCallback(
     async (wanted?: BindAddress) => {
@@ -284,6 +414,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setEngines(await api.engines().catch(() => []));
         setRoutes(await api.routes().catch(() => []));
         setPaths(await api.paths().catch(() => null));
+        setVoices(await api.voices().catch(() => []));
         log("ok", `已连接本地服务 ${url}`);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -608,7 +739,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       models,
       status,
       engines,
+      engineProgress,
+      installing,
+      startEngineInstall,
       routes,
+      voices,
       refresh,
       instances,
       runtimeOf,
@@ -639,7 +774,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       models,
       status,
       engines,
+      engineProgress,
+      installing,
+      startEngineInstall,
       routes,
+      voices,
       refresh,
       instances,
       runtimeOf,
