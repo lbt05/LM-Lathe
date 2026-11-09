@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { StoreProvider, useStore, type View } from "./store";
+import { beginWindowDrag } from "./drag";
 import { Icon } from "./ui";
 import Models, { ModelInspector } from "./pages/Models";
 import Runtimes, { RuntimeInspector } from "./pages/Runtimes";
@@ -70,18 +71,18 @@ function Shell() {
         inTauri() ? " is-tauri" : ""
       }`}
     >
-      <header className="titlebar" data-tauri-drag-region>
-        <span className="lights" data-tauri-drag-region>
+      {/* The bar of the window carries the name of the application and the
+          address of the backend. It drags the window: on macOS the native
+          drag of the system cannot be started from a webview (tauri#9503),
+          so the window follows the mouse itself. */}
+      <header className="titlebar" onPointerDown={beginWindowDrag}>
+        <span className="lights">
           <i />
           <i />
           <i />
         </span>
-        <span className="titlebar__name" data-tauri-drag-region>
-          LM-Lathe
-        </span>
-        <span className="titlebar__ctx" data-tauri-drag-region>
-          {store.base ?? "未连接"}
-        </span>
+        <span className="titlebar__name">LM-Lathe</span>
+        <span className="titlebar__ctx">{store.base ?? "未连接"}</span>
       </header>
 
       <aside className="rail">
@@ -131,7 +132,10 @@ function Shell() {
       </aside>
 
       <main className="main">
-        <div className="topbar">
+        {/* The bar of the page drags the window as well, so that it can be
+            moved from the place the eye already is. The buttons and the
+            input inside it keep their clicks. */}
+        <div className="topbar" onPointerDown={beginWindowDrag}>
           <span className="topbar__title">{page.title}</span>
           <span className="topbar__sub">{page.sub}</span>
           <span className="od-fill" />
