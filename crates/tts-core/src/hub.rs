@@ -159,9 +159,15 @@ impl HubClient {
             // the speech models, so both are seen.
             let half = (limit / 2).max(1);
             let mut language = self.query(query, half, Some("gguf")).await?;
+            // The MLX checkpoints of the community are safetensors files.
+            // They are the fastest language models on a Mac, so they are
+            // looked for as well.
+            language.extend(self.query(query, half, Some("mlx")).await?);
             let mut speech = self.query(query, limit * 2, Some("text-to-speech")).await?;
             language.retain(HubModel::is_runnable);
             speech.retain(HubModel::is_runnable);
+            language.sort_by_key(|model| std::cmp::Reverse(model.downloads));
+            language.dedup_by(|left, right| left.id == right.id);
             language.truncate(half);
             speech.truncate(limit - half);
             let mut models = language;
@@ -173,6 +179,7 @@ impl HubClient {
             });
         }
         let mut all = self.query(query, fetch, Some("gguf")).await?;
+        all.extend(self.query(query, fetch, Some("mlx")).await?);
         all.extend(self.query(query, fetch, Some("text-to-speech")).await?);
         all.extend(self.query(query, fetch, Some("text-generation")).await?);
         all.sort_by_key(|model| std::cmp::Reverse(model.downloads));
@@ -468,15 +475,24 @@ impl HubModel {
             || id.contains("drama3")
     }
 
+    /// `true` when the repository holds an MLX checkpoint.
+    ///
+    /// The MLX checkpoints of the community are safetensors files that the
+    /// native runtime of Apple reads. They are the fastest ones on a Mac, so
+    /// the language models of that format are worth offering.
+    pub fn is_mlx(&self) -> bool {
+        self.format() == "mlx"
+    }
+
     /// `true` when the runtime of the application can serve the model.
     ///
-    /// The language runtime serves every GGUF checkpoint. The speech
-    /// runtime speaks the Qwen3-TTS protocol, so a speech checkpoint is
-    /// only useful when it is a Qwen3-TTS one that is stored in the format
-    /// the runtime reads.
+    /// The language runtime serves every GGUF checkpoint and, on Apple
+    /// Silicon, the MLX ones. The speech runtime speaks the Qwen3-TTS
+    /// protocol, so a speech checkpoint is only useful when it is a
+    /// Qwen3-TTS one that is stored in the format the runtime reads.
     pub fn is_runnable(&self) -> bool {
         match self.family() {
-            Some(ModelFamily::Llm) => !self.gguf_files().is_empty(),
+            Some(ModelFamily::Llm) => !self.gguf_files().is_empty() || self.is_mlx(),
             Some(ModelFamily::Qwen3Tts) => self.is_qwen3_tts() && self.format() != "gguf",
             Some(ModelFamily::FishDrama3) => self.is_drama3() && self.format() != "gguf",
             _ => false,
@@ -491,6 +507,7 @@ impl HubModel {
     /// checkpoints.
     pub fn engine_id(&self) -> &'static str {
         match self.family() {
+            Some(ModelFamily::Llm) if self.is_mlx() => "mlx",
             Some(ModelFamily::Llm) => "llama.cpp",
             Some(ModelFamily::FishDrama3) if self.format() == "mlx" => "fishaudio-drama3-mlx",
             Some(ModelFamily::Qwen3Tts) if self.format() == "mlx" => "mlx-audio",
@@ -516,6 +533,12 @@ impl HubModel {
                     ..Default::default()
                 }
             }
+            // The native runtime of Apple only exists on a Mac.
+            Some(ModelFamily::Llm) if self.is_mlx() => crate::registry::HardwareRequirement {
+                platforms: vec!["macos".to_string()],
+                require_apple_silicon: true,
+                ..Default::default()
+            },
             Some(ModelFamily::Qwen3Tts) | Some(ModelFamily::FishDrama3) => {
                 crate::registry::HardwareRequirement {
                     platforms: vec!["linux".to_string()],
@@ -750,7 +773,13 @@ impl HubModel {
                 ..self.hardware_requirement()
             },
             mode: match family {
-                ModelFamily::Llm => EngineMode::LlamaCpp,
+                ModelFamily::Llm => {
+                    if self.is_mlx() {
+                        EngineMode::MlxLlm
+                    } else {
+                        EngineMode::LlamaCpp
+                    }
+                }
                 ModelFamily::Qwen3Tts => {
                     if self.format() == "mlx" {
                         EngineMode::MlxAudio
@@ -769,6 +798,9 @@ impl HubModel {
             default_ttl_secs: None,
             aliases: Vec::new(),
             launch_args: match family {
+                // The context of the MLX server is the one of the model, the
+                // flag of llama.cpp is not understood by it.
+                ModelFamily::Llm if self.is_mlx() => Vec::new(),
                 ModelFamily::Llm => vec!["--ctx-size".to_string(), "8192".to_string()],
                 _ => Vec::new(),
             },

@@ -235,6 +235,11 @@ impl SGLangOmniAdapter {
                 // reach the speech engine.
                 ("llama-server".to_string(), Vec::new())
             }
+            EngineMode::MlxLlm => {
+                // The language models run in their own runtime, they never
+                // reach the speech engine.
+                ("mlx_lm.server".to_string(), Vec::new())
+            }
             #[cfg(feature = "mock-engine")]
             EngineMode::Mock => ("mock".to_string(), Vec::new()),
         }

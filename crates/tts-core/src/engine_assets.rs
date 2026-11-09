@@ -260,6 +260,11 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
                 "{port}".to_string(),
                 "--model".to_string(),
                 "{model}".to_string(),
+                // The name in the request has to be the name of the model in
+                // the catalogue, so that the answer can be told apart from
+                // the one of another model.
+                "--alias".to_string(),
+                "{model_name}".to_string(),
             ],
             capabilities: vec!["llm".to_string(), "gguf".to_string(), "cpu".to_string()],
             deliveries: vec![delivery(
@@ -288,6 +293,8 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
             server_args: vec![
                 "--model".to_string(),
                 "{model}".to_string(),
+                "--host".to_string(),
+                "127.0.0.1".to_string(),
                 "--port".to_string(),
                 "{port}".to_string(),
             ],
@@ -306,8 +313,8 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
                 ),
                 ..delivery(&["darwin-arm64"], EngineDistribution::PythonPackage)
             }],
-            model_engine_ids: Vec::new(),
-            managed_model_engine_ids: Vec::new(),
+            model_engine_ids: vec!["mlx".to_string()],
+            managed_model_engine_ids: vec!["mlx".to_string()],
             build_tags: Vec::new(),
             health_path: None,
             model_programs: Vec::new(),
@@ -473,6 +480,41 @@ pub fn engine_definitions() -> Vec<EngineDefinition> {
 /// The definition of one engine.
 pub fn engine_definition(engine_id: &str) -> Option<EngineDefinition> {
     engine_definitions().into_iter().find(|d| d.id == engine_id)
+}
+
+/// `true` when the engine reads GGUF checkpoints.
+///
+/// The engines that read GGUF want the file itself, the ones that read
+/// safetensors want the directory with the weights, the config and the
+/// tokenizer.
+pub fn engine_reads_gguf(engine_id: &str) -> bool {
+    engine_definition(engine_id)
+        .map(|definition| definition.capabilities.iter().any(|item| item == "gguf"))
+        .unwrap_or(false)
+}
+
+/// The arguments the server of an engine is started with.
+///
+/// The definition of the engine holds the template; the path of the model,
+/// the name of the model and the port are filled in.
+pub fn server_arguments(
+    engine_id: &str,
+    model: &Path,
+    model_name: &str,
+    port: u16,
+) -> Vec<String> {
+    let Some(definition) = engine_definition(engine_id) else {
+        return Vec::new();
+    };
+    definition
+        .server_args
+        .iter()
+        .map(|arg| {
+            arg.replace("{port}", &port.to_string())
+                .replace("{model}", &model.to_string_lossy())
+                .replace("{model_name}", model_name)
+        })
+        .collect()
 }
 
 /// The delivery of an engine on the current platform.

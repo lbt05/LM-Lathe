@@ -117,6 +117,8 @@ pub enum EngineMode {
     MlxAudio,
     /// A GGUF checkpoint served by llama.cpp.
     LlamaCpp,
+    /// A safetensors checkpoint served by mlx-lm on Apple Silicon.
+    MlxLlm,
     /// The synthetic engine of the tests.
     #[cfg(feature = "mock-engine")]
     Mock,
@@ -129,6 +131,7 @@ impl EngineMode {
             EngineMode::MlxNative => "mlx_native",
             EngineMode::MlxAudio => "mlx_audio",
             EngineMode::LlamaCpp => "llama_cpp",
+            EngineMode::MlxLlm => "mlx_llm",
             #[cfg(feature = "mock-engine")]
             EngineMode::Mock => "mock",
         }

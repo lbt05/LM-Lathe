@@ -46,6 +46,12 @@ pub struct LlmRuntime {
     pub estimated_memory: u64,
     /// Memory the runtime actually uses.
     pub actual_memory: Option<u64>,
+    /// The name the server knows the model by.
+    ///
+    /// It is the name of the catalogue for llama.cpp, and the path of the
+    /// checkpoint for the MLX server, which reads it from the request.
+    #[serde(default)]
+    pub server_model: Option<String>,
 }
 
 /// Manages the lifecycle of the language models.
@@ -129,10 +135,10 @@ impl LlmRuntimeManager {
             .engines
             .resolve_program(&spec.engine_id)
             .ok_or_else(|| {
-                TtsError::Engine(
-                    "the llama.cpp runtime is not installed, install it on the runtime page first"
-                        .to_string(),
-                )
+                TtsError::Engine(format!(
+                    "the {} runtime is not installed, install it on the runtime page first",
+                    spec.engine_id
+                ))
             })?;
 
         // The server of the model occupies memory of the machine, the same
@@ -154,15 +160,15 @@ impl LlmRuntimeManager {
         let port = free_port()?;
         let log_path = self.log_path(&spec.id);
         let mut command = tokio::process::Command::new(&binary);
+        // The arguments come from the definition of the engine: the servers
+        // do not speak the same dialect.
         command
-            .arg("--model")
-            .arg(&checkpoint)
-            .arg("--host")
-            .arg("127.0.0.1")
-            .arg("--port")
-            .arg(port.to_string())
-            .arg("--alias")
-            .arg(&spec.id)
+            .args(crate::engine_assets::server_arguments(
+                &spec.engine_id,
+                &checkpoint,
+                &spec.id,
+                port,
+            ))
             .args(spec.launch_args.clone())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -214,6 +220,7 @@ impl LlmRuntimeManager {
             active_requests: 0,
             estimated_memory: spec.estimated_memory_bytes,
             actual_memory: None,
+            server_model: Some(self.server_model_name(&spec)),
         };
         self.set_runtime(runtime.clone());
 
@@ -323,7 +330,11 @@ impl LlmRuntimeManager {
 
         // The server knows one model, the name in the request is only a label.
         if let Some(object) = body.as_object_mut() {
-            object.insert("model".to_string(), serde_json::json!(model_id));
+            let name = runtime
+                .server_model
+                .clone()
+                .unwrap_or_else(|| model_id.to_string());
+            object.insert("model".to_string(), serde_json::json!(name));
         }
 
         let client = reqwest::Client::new();
@@ -345,10 +356,37 @@ impl LlmRuntimeManager {
                 text.chars().take(400).collect::<String>()
             )));
         }
-        serde_json::from_str(&text).map_err(|err| TtsError::Serialization(err.to_string()))
+        let mut answer: serde_json::Value =
+            serde_json::from_str(&text).map_err(|err| TtsError::Serialization(err.to_string()))?;
+        // The answer carries the name the server knows the model by; the
+        // caller asked for the model of the catalogue.
+        if let Some(object) = answer.as_object_mut() {
+            object.insert("model".to_string(), serde_json::json!(model_id));
+        }
+        Ok(answer)
     }
 
-    /// The GGUF file of a model.
+    /// The name the server of a model knows the model by.
+    ///
+    /// llama.cpp is told the name of the catalogue through `--alias`, and it
+    /// answers to it. The MLX server reads the checkpoint from the request
+    /// instead, and it only loads what is on the disk — so it gets the path
+    /// of the checkpoint.
+    fn server_model_name(&self, spec: &crate::registry::TTSModelSpec) -> String {
+        if crate::engine_assets::engine_reads_gguf(&spec.engine_id) {
+            return spec.id.clone();
+        }
+        self.registry
+            .install_path(&spec.id)
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| spec.id.clone())
+    }
+
+    /// The path the server of the model is given.
+    ///
+    /// The engines that read GGUF want the file itself, the ones that read
+    /// safetensors want the directory with the weights, the config and the
+    /// tokenizer.
     fn checkpoint_of(&self, spec: &crate::registry::TTSModelSpec) -> TtsResult<PathBuf> {
         let dir = self
             .registry
@@ -359,6 +397,9 @@ impl LlmRuntimeManager {
                 "`{}` is not downloaded yet",
                 spec.id
             )));
+        }
+        if !crate::engine_assets::engine_reads_gguf(&spec.engine_id) {
+            return Ok(dir);
         }
         gguf_checkpoint(&dir).ok_or_else(|| {
             TtsError::InvalidRequest(format!("`{}` has no GGUF checkpoint", spec.id))

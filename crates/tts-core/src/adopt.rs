@@ -141,7 +141,7 @@ fn adopt(directory: &Path, name: &str) -> Option<AdoptedCheckpoint> {
     }
     let candidates = repo_candidates(name);
     let repo = candidates.first()?.clone();
-    let model = local_model(&repo, &files);
+    let model = local_model(&repo, &files, directory);
     // The runtime of the application cannot serve everything that carries
     // weights: a directory of an unknown kind stays a directory.
     if !model.is_runnable() {
@@ -219,7 +219,7 @@ fn repo_candidates(name: &str) -> Vec<String> {
 /// The hub answers a search with the metadata of a repository; the files on
 /// the disk tell the same story well enough for a model that is not in the
 /// catalogue yet.
-fn local_model(repo: &str, files: &[RepoFile]) -> HubModel {
+fn local_model(repo: &str, files: &[RepoFile], directory: &Path) -> HubModel {
     let mut tags = Vec::new();
     let name = repo.to_lowercase();
     // The name of the repository tells the family of a speech checkpoint.
@@ -231,12 +231,20 @@ fn local_model(repo: &str, files: &[RepoFile]) -> HubModel {
     if speech {
         tags.push("qwen3_tts".to_string());
     }
-    if name.contains("mlx") {
+    // The MLX checkpoints carry the information about their quantisation in
+    // their config, which is more reliable than the name of the repository.
+    if is_mlx_checkpoint(directory) || name.contains("mlx") {
         tags.push("mlx".to_string());
     }
     HubModel {
         id: repo.to_string(),
-        pipeline_tag: None,
+        // A checkpoint that is not a speech model belongs to the language
+        // runtime.
+        pipeline_tag: if speech {
+            None
+        } else {
+            Some("text-generation".to_string())
+        },
         library_name: None,
         downloads: 0,
         likes: 0,
@@ -252,6 +260,23 @@ fn local_model(repo: &str, files: &[RepoFile]) -> HubModel {
         size_bytes: None,
         parameters: None,
     }
+}
+
+/// `true` when the checkpoint is an MLX one.
+///
+/// The MLX checkpoints keep the information about their quantisation in
+/// their config; the other formats do not have it.
+fn is_mlx_checkpoint(directory: &Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(directory.join("config.json")) else {
+        return false;
+    };
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    let Some(object) = config.as_object() else {
+        return false;
+    };
+    object.contains_key("quantization") || object.contains_key("quantization_config")
 }
 
 /// The files of a checkpoint, with their sizes.
