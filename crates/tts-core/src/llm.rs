@@ -8,10 +8,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use ai_scheduler::{MemoryLease, Scheduler, TenantKind};
+use ai_scheduler::{evictor_from_fn, Evictor, MemoryLease, Scheduler, TenantKind, TenantState};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +64,8 @@ pub struct LlmRuntimeManager {
     children: Mutex<HashMap<String, tokio::process::Child>>,
     leases: Mutex<HashMap<String, MemoryLease>>,
     logs: Mutex<HashMap<String, PathBuf>>,
+    /// The manager itself, for the evictor of the scheduler.
+    self_weak: Weak<LlmRuntimeManager>,
 }
 
 impl LlmRuntimeManager {
@@ -74,7 +76,7 @@ impl LlmRuntimeManager {
         engines: Arc<EngineAssetManager>,
         logs_dir: impl Into<PathBuf>,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|weak: &Weak<Self>| Self {
             registry,
             scheduler,
             engines,
@@ -83,6 +85,49 @@ impl LlmRuntimeManager {
             children: Mutex::new(HashMap::new()),
             leases: Mutex::new(HashMap::new()),
             logs: Mutex::new(HashMap::new()),
+            self_weak: weak.clone(),
+        })
+    }
+
+    /// The key of the tenant of a model in the scheduler.
+    fn tenant_key(model_id: &str) -> String {
+        format!("llm:{}", model_id)
+    }
+
+    /// Registers the tenant of a model in the scheduler.
+    ///
+    /// The tenant carries the evictor, so that the scheduler can take the
+    /// memory of the model back when a bigger one needs it.
+    fn register_tenant(&self, spec: &crate::registry::TTSModelSpec) {
+        self.scheduler.register_tenant(
+            &Self::tenant_key(&spec.id),
+            TenantKind::Llm,
+            spec.estimated_memory_bytes,
+            spec.default_ttl_secs.map(Duration::from_secs),
+            Some(Self::evictor(self.self_weak.clone())),
+        );
+    }
+
+    /// The callback that lets the scheduler take the memory of a model back.
+    ///
+    /// Without it the language models hold their memory until they are
+    /// unloaded by hand, and a bigger model does not fit any more.
+    fn evictor(weak: Weak<LlmRuntimeManager>) -> Evictor {
+        evictor_from_fn(move |key: String| {
+            let weak = weak.upgrade();
+            async move {
+                let Some(manager) = weak else {
+                    return Ok(());
+                };
+                let model_id = key.strip_prefix("llm:").unwrap_or(&key).to_string();
+                manager
+                    .unload_model(&model_id)
+                    .await
+                    .map_err(|err| ai_scheduler::SchedulerError::EvictionFailed {
+                        tenant: key,
+                        reason: err.to_string(),
+                    })
+            }
         })
     }
 
@@ -142,15 +187,10 @@ impl LlmRuntimeManager {
             })?;
 
         // The server of the model occupies memory of the machine, the same
-        // pool the speech models use.
-        let tenant_key = format!("llm:{}", spec.id);
-        self.scheduler.register_tenant(
-            &tenant_key,
-            TenantKind::Llm,
-            spec.estimated_memory_bytes,
-            spec.default_ttl_secs.map(Duration::from_secs),
-            None,
-        );
+        // pool the speech models use. The evictor lets the scheduler take the
+        // memory back when a bigger model needs it.
+        let tenant_key = Self::tenant_key(&spec.id);
+        self.register_tenant(&spec);
         let lease = self
             .scheduler
             .acquire(&tenant_key, spec.estimated_memory_bytes, None)
@@ -223,6 +263,7 @@ impl LlmRuntimeManager {
             server_model: Some(self.server_model_name(&spec)),
         };
         self.set_runtime(runtime.clone());
+        let _ = self.scheduler.set_state(&tenant_key, TenantState::Loading);
 
         if let Err(err) = self.wait_until_healthy(&endpoint, &spec.id).await {
             self.unload_model(&spec.id).await.ok();
@@ -232,11 +273,14 @@ impl LlmRuntimeManager {
         let mut runtime = runtime;
         runtime.state = RuntimeState::Running;
         self.set_runtime(runtime.clone());
+        let _ = self.scheduler.set_state(&tenant_key, TenantState::Running);
         Ok(runtime)
     }
 
     /// Stops the server of a model.
     pub async fn unload_model(&self, model_id: &str) -> TtsResult<()> {
+        let tenant_key = Self::tenant_key(model_id);
+        let _ = self.scheduler.set_state(&tenant_key, TenantState::Unloading);
         // The locks are left before the process is stopped: a guard that is
         // held over an await makes the future unusable in the server.
         let child = {
@@ -264,6 +308,7 @@ impl LlmRuntimeManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(model_id);
+        self.scheduler.unregister_tenant(&tenant_key);
         Ok(())
     }
 
@@ -515,4 +560,70 @@ fn tail_of(path: &Path, bytes: usize) -> String {
     };
     let start = data.len().saturating_sub(bytes);
     String::from_utf8_lossy(&data[start..]).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::AppPaths;
+    use crate::registry::TTSModelSpec;
+    use crate::types::ModelFamily;
+
+    /// A model of the catalogue, without a checkpoint.
+    fn spec(id: &str) -> TTSModelSpec {
+        TTSModelSpec {
+            id: id.to_string(),
+            name: id.to_string(),
+            family: ModelFamily::Llm,
+            engine_id: "llama.cpp".to_string(),
+            hf_repo: format!("some/{id}"),
+            version: "1".to_string(),
+            format: "gguf".to_string(),
+            size_bytes: 1024,
+            estimated_memory_bytes: 1024,
+            parameters: None,
+            features: Vec::new(),
+            llm_features: Vec::new(),
+            files: Vec::new(),
+            hardware: Default::default(),
+            mode: crate::types::EngineMode::LlamaCpp,
+            default_ttl_secs: None,
+            aliases: Vec::new(),
+            launch_args: Vec::new(),
+            local_path: None,
+            notes: None,
+        }
+    }
+
+    /// The language models give their memory back when a bigger model needs
+    /// it.
+    ///
+    /// The scheduler can only take the memory of a tenant back that carries
+    /// an evictor. Without it the models of the language runtime hold their
+    /// memory until they are unloaded by hand, and nothing bigger fits any
+    /// more.
+    #[tokio::test]
+    async fn a_language_model_can_be_evicted() {
+        let root = std::env::temp_dir().join(format!("lm-lathe-llm-{}", std::process::id()));
+        let paths = AppPaths::with_root(&root);
+        paths.ensure().expect("the directories are there");
+        let scheduler = Scheduler::new(ai_scheduler::SchedulerConfig {
+            total_bytes: 8 * 1024 * 1024 * 1024,
+            reserved_bytes: 0,
+            ..Default::default()
+        });
+        let manager = LlmRuntimeManager::new(
+            Arc::new(TTSModelRegistry::builtin()),
+            scheduler.clone(),
+            EngineAssetManager::new(paths.clone()).expect("the engines are known"),
+            paths.llm_logs_root(),
+        );
+        let spec = spec("a-language-model");
+        manager.register_tenant(&spec);
+        assert!(
+            scheduler.tenant_is_evictable(&LlmRuntimeManager::tenant_key(&spec.id)),
+            "the memory of a language model can be taken back"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

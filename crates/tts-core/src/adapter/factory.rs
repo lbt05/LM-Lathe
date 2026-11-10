@@ -39,6 +39,33 @@ impl AdapterFactory {
         self.engine.logs_for(model_id)
     }
 
+    /// The program that serves the model, when the engine is there.
+    ///
+    /// A model whose engine is not installed has no program. The check runs
+    /// before the memory of the other models is taken: a missing engine
+    /// would evict them for nothing.
+    pub fn engine_program(&self, spec: &TTSModelSpec) -> Option<std::path::PathBuf> {
+        // The mock engine is part of the application: it has no program.
+        #[cfg(feature = "mock-engine")]
+        if spec.mode == crate::types::EngineMode::Mock {
+            return Some(std::path::PathBuf::new());
+        }
+        let settings = self.engine.settings();
+        let (engine_id, fallback) = match spec.mode {
+            crate::types::EngineMode::MlxNative => {
+                (spec.engine_id.as_str(), settings.mlx_binary.as_str())
+            }
+            crate::types::EngineMode::MlxAudio => {
+                ("mlx-audio", settings.mlx_audio_binary.as_str())
+            }
+            crate::types::EngineMode::SglangOmni => {
+                ("sglang-omni", settings.sglang_binary.as_str())
+            }
+            _ => (spec.engine_id.as_str(), settings.sglang_binary.as_str()),
+        };
+        settings.program_for(engine_id, fallback)
+    }
+
     /// Creates the adapter that serves the given model.
     pub fn create(&self, spec: &TTSModelSpec) -> TtsResult<Arc<dyn TTSAdapter>> {
         Ok(match spec.family {

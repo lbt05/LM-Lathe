@@ -64,6 +64,17 @@ impl EngineSettings {
     fn resolve_binary(&self, engine_id: &str) -> Option<PathBuf> {
         self.binary_resolver.as_ref().and_then(|resolver| resolver(engine_id))
     }
+
+    /// The program that serves a model, when it is there.
+    ///
+    /// The managed installations win over the `PATH`. A model whose engine is
+    /// not installed has no program: it cannot be loaded before the engine
+    /// is there.
+    pub fn program_for(&self, engine_id: &str, fallback: &str) -> Option<PathBuf> {
+        self.resolve_binary(engine_id).or_else(|| {
+            crate::engine_assets::find_in_path(fallback)
+        })
+    }
 }
 
 impl std::fmt::Debug for EngineSettings {
@@ -132,6 +143,11 @@ impl SGLangOmniAdapter {
             registry: RwLock::new(None),
             log_files: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// The settings of the engine.
+    pub fn settings(&self) -> &EngineSettings {
+        &self.settings
     }
 
     /// Registers the model registry used to resolve protocols.

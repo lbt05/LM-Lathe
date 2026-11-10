@@ -416,6 +416,17 @@ impl Inner {
             Some(Self::evictor(self.self_weak.clone())),
         );
 
+        // The engine has to be there before the memory is taken: the
+        // scheduler would evict the other models to make room for a model
+        // whose engine cannot even start.
+        if self.factory.engine_program(&spec).is_none() {
+            self.scheduler.unregister_tenant(&tenant_key);
+            return Err(TtsError::Engine(format!(
+                "the `{}` runtime is not installed, install it on the runtime page first",
+                spec.engine_id
+            )));
+        }
+
         let lease = self
             .scheduler
             .acquire(

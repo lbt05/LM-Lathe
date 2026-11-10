@@ -296,6 +296,19 @@ impl Scheduler {
         Ok(())
     }
 
+    /// `true` when the scheduler may take the memory of the tenant back.
+    ///
+    /// A tenant without an evictor holds its memory until it is released by
+    /// hand: the scheduler cannot free it for another model.
+    pub fn tenant_is_evictable(&self, key: &str) -> bool {
+        let inner = self.lock();
+        inner
+            .tenants
+            .get(key)
+            .map(|entry| entry.evictor.is_some())
+            .unwrap_or(false)
+    }
+
     /// Current snapshot of pool and tenants.
     pub fn snapshot(&self) -> SchedulerSnapshot {
         let state = self.lock();

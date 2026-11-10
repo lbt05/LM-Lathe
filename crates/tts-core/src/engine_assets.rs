@@ -1914,7 +1914,7 @@ fn extract_archive(archive: &Path, target: &Path, name: &str) -> TtsResult<()> {
 }
 
 /// Searches the `PATH` for a program.
-fn find_in_path(program: &str) -> Option<PathBuf> {
+pub fn find_in_path(program: &str) -> Option<PathBuf> {
     if program.is_empty() {
         return None;
     }
