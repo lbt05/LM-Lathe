@@ -353,27 +353,138 @@ tail -40 ~/.lm-lathe/logs/tts/mlx-audio/*.log
 
 ---
 
-## 8. 和声音克隆的区别
+## 8. 声音克隆
 
-| | 声音设计 | 声音克隆 |
-|---|---|---|
-| 输入 | 一段文字描述 | 一段录音（+ 它的文字稿）|
-| 端点 | `POST /v1/tts/voices/design` | `POST /v1/tts/voices/clone` |
-| 引擎 | mlx-audio（Qwen3-TTS 1.7B）| mlx-audio（Qwen3-TTS 1.7B Base）|
-| 模型 | `qwen3-tts-1.7b-voicedesign-mlx` | `qwen3-tts-1.7b-base-mlx` |
+克隆是把**一段录音**变成一个声音档案，之后用它说任何话。
 
-克隆的请求长这样（`reference_audio` 是本机文件的绝对路径）：
+### 8.1 两个引擎，两个模型
+
+| 引擎 | 模型 | 克隆效果 | 内存 |
+|---|---|---|---|
+| **Drama 3**（原生 MLX）| `drama-3-mlx-4bit` | 音色最像原声，支持多角色、情绪控制、音频编辑 | 权重 22.1G，峰值约 29G |
+| Drama 3（原生 MLX）| `drama-3-mlx-8bit` | 同上，8bit 量化 | 权重 39.3G |
+| Qwen3-TTS（mlx-audio）| `qwen3-tts-1.7b-base-mlx` | 快得多，内存小 | 权重 2.2G |
+
+**想用 Drama 3 克隆，就选 `drama-3-mlx-4bit`**（下面第 3 节）。
+
+### 8.2 用 Drama 3 克隆
+
+前置条件（比声音设计多两条）：
+
+```bash
+# 1) 模型在盘上（22.1G）
+curl -s http://127.0.0.1:54321/v1/tts/models | \
+  python3 -c "
+import json,sys
+for m in json.load(sys.stdin):
+    if 'drama-3-mlx' in m['id']: print(f\"{m['id']:<28} 已下载={m['installed']} 能跑={m['compatible']}\")"
+# drama-3-mlx-4bit   已下载=True  能跑=True
+
+# 2) 引擎装好了（原生 MLX 运行时，源码编译，第一次要十几分钟）
+curl -s http://127.0.0.1:54321/v1/runtimes | \
+  python3 -c "
+import json,sys
+for r in json.load(sys.stdin):
+    if r['id']=='sglang-omni-mlx': print(r['status'], [i['version'] for i in r.get('installed',[])])"
+# installed ['main']
+```
+
+装引擎：
+
+```bash
+curl -s -X POST http://127.0.0.1:54321/v1/runtimes/sglang-omni-mlx/install -H 'Content-Type: application/json' -d '{}'
+```
+
+装模型：
+
+```bash
+./target/release/lm-lathe-server models install drama-3-mlx-4bit
+```
+
+### 8.3 克隆请求
 
 ```bash
 curl -s -X POST http://127.0.0.1:54321/v1/tts/voices/clone \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "qwen3-tts-1.7b-base-mlx",
-    "name": "我的声音",
+    "model": "drama-3-mlx-4bit",
+    "name": "小艾克隆",
+    "description": "用 Drama 3 从录音克隆的声音",
+    "language": "zh",
     "reference_audio": "/Users/me/录音.wav",
     "reference_text": "录音里说的原话",
-    "description": "克隆自我的录音"
+    "sample_text": "这是克隆出来的声音在说另一句话。"
   }'
 ```
 
-出来的档案和设计出来的一样用：一样有 `id`、一样有试听样本、一样能拿去 `/v1/tts/speak`。
+回答和声音设计一样：
+
+```json
+{
+  "voice": {
+    "id": "voice_1333ad1e",
+    "name": "小艾克隆",
+    "engine": "fish-drama-3",
+    "model_id": "drama-3-mlx-4bit",
+    "engine_config": {
+      "reference_audio": "/Users/me/录音.wav",
+      "reference_text": "录音里说的原话"
+    },
+    "samples": []
+  },
+  "sample": "samples/voice_1333ad1e_001.wav",
+  "sample_path": "/Users/lbt05/.lm-lathe/voices/voice_1333ad1e/samples/voice_1333ad1e_001.wav"
+}
+```
+
+取 WAV 的方式和 2.3 完全一样：
+
+```bash
+curl -s -o 克隆.wav http://127.0.0.1:54321/v1/tts/voices/voice_1333ad1e/samples/voice_1333ad1e_001.wav
+```
+
+用克隆的声音说别的：
+
+```bash
+curl -s -X POST http://127.0.0.1:54321/v1/tts/speak \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "drama-3-mlx-4bit",
+    "voice_id": "voice_1333ad1e",
+    "input": "克隆出来的声音，第二句。",
+    "response_format": "wav"
+  }' -o 第二句.wav
+```
+
+### 8.4 参考音频的要求
+
+| 要求 | 说明 |
+|---|---|
+| 本机文件 | 原生 MLX 运行时只收本机路径，不收 URL |
+| WAV | 应用会自己转成 44.1 kHz 单声道 16bit 的 WAV 再发给引擎；**MP3/M4A 之类要先转成 WAV** |
+| 10 秒左右 | 太短音色不稳，太长会占内存 |
+| 单人 | 多人说话会混在一起 |
+| `reference_text` | 录音里说的**原话**（逐字）。写错或留空，音色会跑偏 |
+| 干净的环境 | 底噪和混响会被一起学进去 |
+
+转格式（需要 ffmpeg）：
+
+```bash
+ffmpeg -i 录音.m4a -ar 44100 -ac 1 录音.wav
+```
+
+### 8.5 声音设计 vs 声音克隆
+
+| | 声音设计 | 声音克隆（Drama 3）| 声音克隆（Qwen3-TTS）|
+|---|---|---|---|
+| 输入 | 一段文字描述 | 一段录音 + 原话 | 一段录音 + 原话 |
+| 端点 | `POST /v1/tts/voices/design` | `POST /v1/tts/voices/clone` | 同左 |
+| 模型 | `qwen3-tts-1.7b-voicedesign-mlx` | `drama-3-mlx-4bit` | `qwen3-tts-1.7b-base-mlx` |
+| 引擎 | mlx-audio | 原生 MLX（`sglang-omni-mlx`）| mlx-audio |
+| 权重 | 2.2 G | 22.1 G | 2.2 G |
+| 额外能力 | 声音设计 | **多角色、情绪控制、音频编辑** | 只有克隆 |
+| 起步速度 | ~7 秒 | ~10 秒（含起引擎）| ~3 秒 |
+
+出来的档案都一样用：一样有 `id`、一样有试听样本、一样能拿去 `/v1/tts/speak`。
+
+> **内存提醒**：Drama 3 克隆时占掉约 29 G。调度器会把装不下的模型挤掉（语言模型优先被挤），腾出来的空间不够的话会直接报 `insufficient resources`。

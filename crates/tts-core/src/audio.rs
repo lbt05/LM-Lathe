@@ -275,6 +275,30 @@ pub fn encode_pcm16(pcm: &PcmSamples) -> Vec<u8> {
     out
 }
 
+/// Encodes samples as a WAV file in memory.
+///
+/// The engines that take a reference clip want a whole WAV file — the
+/// header and the samples — and not the raw samples: they check the file
+/// before they read it.
+pub fn encode_wav(pcm: &PcmSamples) -> Vec<u8> {
+    let spec = hound::WavSpec {
+        channels: pcm.channels,
+        sample_rate: pcm.sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = hound::WavWriter::new(&mut cursor, spec).expect("a WAV fits in memory");
+        for sample in &pcm.samples {
+            let value = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+            writer.write_sample(value).expect("a WAV fits in memory");
+        }
+        writer.finalize().expect("a WAV fits in memory");
+    }
+    cursor.into_inner()
+}
+
 /// Inspects a WAV file in memory.
 pub fn inspect_wav_bytes(bytes: &[u8]) -> Option<AudioInfo> {
     let cursor = std::io::Cursor::new(bytes);
@@ -407,8 +431,10 @@ pub fn wav_to_mono_44k_base64(path: &Path) -> TtsResult<String> {
     let pcm = read_wav_samples(path)?;
     let mono = change_channel_count(&pcm, 1);
     let resampled = resample(&mono, 44_100);
-    let pcm16 = encode_pcm16(&resampled);
-    Ok(base64_encode(&pcm16))
+    // The native runtime wants a WAV file, and not the raw samples: it
+    // reads the header before it reads the audio.
+    let wav = encode_wav(&resampled);
+    Ok(base64_encode(&wav))
 }
 
 /// Minimal base64 encoder (standard alphabet, padded).
@@ -511,6 +537,24 @@ mod tests {
         let out = resample(&pcm, 20_000);
         assert_eq!(out.sample_rate, 20_000);
         assert_eq!(out.samples.len(), 2000);
+    }
+
+    /// The reference clips are sent to the engine as a whole WAV file.
+    ///
+    /// The native runtime reads the header of the file before it reads the
+    /// audio, so raw samples are not enough.
+    #[test]
+    fn a_reference_clip_is_a_wav_file() {
+        let pcm = PcmSamples {
+            samples: (0..100).map(|i| (i as f32 / 100.0) - 0.5).collect(),
+            sample_rate: 44_100,
+            channels: 1,
+        };
+        let wav = encode_wav(&pcm);
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        // The header and the samples are there.
+        assert_eq!(wav.len(), 44 + 200);
     }
 
     #[test]
