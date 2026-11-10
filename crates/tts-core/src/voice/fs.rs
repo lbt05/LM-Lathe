@@ -216,13 +216,32 @@ impl VoiceLibrary for FsVoiceLibrary {
     }
 
     async fn sample_path(&self, id: &str, sample: &str) -> TtsResult<PathBuf> {
-        let path = self.voice_dir(id).join(sample);
-        if !path.exists() {
+        // The name comes from the outside, so it has to stay inside the
+        // directory of the voice.
+        if sample.is_empty()
+            || sample.starts_with('/')
+            || sample
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
             return Err(TtsError::InvalidRequest(format!(
-                "sample `{sample}` does not exist"
+                "invalid sample name `{sample}`"
             )));
         }
-        Ok(path)
+        let direct = self.voice_dir(id).join(sample);
+        if direct.exists() {
+            return Ok(direct);
+        }
+        // The samples live below the `samples` directory of the voice. The
+        // route already names that directory, so the name of the sample may
+        // come with it or without it.
+        let nested = self.samples_dir(id).join(sample);
+        if nested.exists() {
+            return Ok(nested);
+        }
+        Err(TtsError::InvalidRequest(format!(
+            "sample `{sample}` does not exist"
+        )))
     }
 
     async fn samples(&self, id: &str) -> TtsResult<Vec<VoiceSample>> {
