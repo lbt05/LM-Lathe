@@ -1008,6 +1008,7 @@ export function ModelInspector({ id, tab }: { id: string; tab: string }) {
           <Kv k="进程" v={runtime.process_id ?? "—"} mono />
           <Kv k="活动请求" v={String(runtime.active_requests)} mono />
           <Kv k="估算内存" v={formatBytes(runtime.estimated_memory)} mono />
+          <Kv k="权重文件" v={formatBytes(runtime.checkpoint_bytes)} mono />
           <Kv k="实际内存" v={formatBytes(runtime.actual_memory)} mono />
           <Kv
             k="最近使用"

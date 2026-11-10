@@ -46,6 +46,14 @@ pub struct LlmRuntime {
     pub estimated_memory: u64,
     /// Memory the runtime actually uses.
     pub actual_memory: Option<u64>,
+    /// The size of the weights on the disk.
+    ///
+    /// The engines map the checkpoint into their address space instead of
+    /// copying it, so the memory of the process does not hold the weights
+    /// until they are used. This is the number that tells how big the model
+    /// really is.
+    #[serde(default)]
+    pub checkpoint_bytes: Option<u64>,
     /// The name the server knows the model by.
     ///
     /// It is the name of the catalogue for llama.cpp, and the path of the
@@ -133,8 +141,26 @@ impl LlmRuntimeManager {
 
     /// The state of every known language model.
     pub fn runtimes(&self) -> Vec<LlmRuntime> {
-        let runtimes = self.runtimes.lock().unwrap_or_else(|e| e.into_inner());
-        let mut list: Vec<LlmRuntime> = runtimes.values().cloned().collect();
+        let mut list: Vec<LlmRuntime> = self
+            .runtimes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        // The memory of a running engine is read again, so that the numbers
+        // follow the process.
+        for runtime in &mut list {
+            if runtime.state == RuntimeState::Running {
+                runtime.actual_memory = runtime
+                    .process_id
+                    .and_then(crate::hardware::process_memory);
+            }
+            runtime.checkpoint_bytes = self
+                .registry
+                .get(&runtime.model_id)
+                .map(|spec| spec.size_bytes);
+        }
         list.sort_by(|a, b| a.model_id.cmp(&b.model_id));
         list
     }
@@ -260,6 +286,7 @@ impl LlmRuntimeManager {
             active_requests: 0,
             estimated_memory: spec.estimated_memory_bytes,
             actual_memory: None,
+            checkpoint_bytes: None,
             server_model: Some(self.server_model_name(&spec)),
         };
         self.set_runtime(runtime.clone());

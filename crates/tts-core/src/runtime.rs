@@ -52,6 +52,13 @@ pub struct TTSRuntime {
     pub estimated_memory: u64,
     /// Memory the runtime actually uses.
     pub actual_memory: Option<u64>,
+    /// The size of the weights on the disk.
+    ///
+    /// The engines map the checkpoint into their address space instead of
+    /// copying it, so the memory of the process does not hold the weights
+    /// until they are used. This is the number that tells how big the model
+    /// really is.
+    pub checkpoint_bytes: Option<u64>,
 }
 
 /// Result of a synthesis request.
@@ -314,6 +321,10 @@ impl Inner {
                     .process_id
                     .and_then(crate::hardware::process_memory);
             }
+            runtime.checkpoint_bytes = self
+                .registry
+                .get(&runtime.model_id)
+                .map(|spec| spec.size_bytes);
         }
         runtimes.sort_by(|a, b| a.model_id.cmp(&b.model_id));
         runtimes
@@ -335,6 +346,7 @@ impl Inner {
                 active_requests: 0,
                 estimated_memory: 0,
                 actual_memory: None,
+                checkpoint_bytes: None,
             });
         update(runtime);
     }
@@ -746,5 +758,6 @@ fn empty_runtime(spec: &TTSModelSpec) -> TTSRuntime {
         active_requests: 0,
         estimated_memory: spec.estimated_memory_bytes,
         actual_memory: None,
+        checkpoint_bytes: None,
     }
 }

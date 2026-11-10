@@ -93,6 +93,8 @@ export interface Runtime {
   active_requests: number;
   estimated_memory: number;
   actual_memory: number | null;
+  /** The size of the weights on the disk. */
+  checkpoint_bytes?: number | null;
 }
 
 export interface Status {

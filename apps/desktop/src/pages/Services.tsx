@@ -140,7 +140,14 @@ export default function Services() {
                       <span className="sub">{runtime.endpoint ?? "—"}</span>
                     </td>
                     <td className="num">
-                      {formatBytes(runtime.actual_memory)}
+                      <span className="cellstack">
+                        <span className="name">
+                          {formatBytes(runtime.checkpoint_bytes)}
+                        </span>
+                        <span className="sub">
+                          常驻 {formatBytes(runtime.actual_memory)}
+                        </span>
+                      </span>
                     </td>
                     <td className="num">{runtime.active_requests}</td>
                     <td>
@@ -279,7 +286,13 @@ export function ServiceInspector({ id, tab }: { id: string; tab: string }) {
           <Kv k="运行时" v={runtime.engine_id} mono />
           <Kv k="端点" v={runtime.endpoint ?? "—"} mono />
           <Kv k="进程" v={runtime.process_id ?? "—"} mono />
+          <Kv k="权重文件" v={formatBytes(runtime.checkpoint_bytes)} mono />
           <Kv k="占用内存" v={formatBytes(runtime.actual_memory)} mono />
+          <Kv
+            k="内存说明"
+            v="权重是映射进引擎的，只有真正用到的那部分才计入常驻内存"
+            mono
+          />
           <Kv k="活动请求" v={String(runtime.active_requests)} mono />
           <Kv
             k="最近使用"

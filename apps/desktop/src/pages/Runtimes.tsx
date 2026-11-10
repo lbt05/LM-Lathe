@@ -331,7 +331,14 @@ export default function Runtimes() {
                       <span className="sub">{instance.endpoint ?? "—"}</span>
                     </td>
                     <td className="num">
-                      {formatBytes(instance.actual_memory)}
+                      <span className="cellstack">
+                        <span className="name">
+                          {formatBytes(instance.checkpoint_bytes)}
+                        </span>
+                        <span className="sub">
+                          常驻 {formatBytes(instance.actual_memory)}
+                        </span>
+                      </span>
                     </td>
                     <td className="num">{instance.active_requests}</td>
                   </tr>
