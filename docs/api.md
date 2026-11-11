@@ -131,7 +131,7 @@ curl -s -X POST http://127.0.0.1:54321/v1/tts/speak \
   -d '{
     "model": "drama-3-mlx-4bit",
     "voice_id": "voice_a89ad40d",
-    "input": "(mumbles) 说了不要开枪……没有子弹的啊……",
+    "input": "[mumbles] 说了不要开枪……没有子弹的啊……",
     "response_format": "wav"
   }' -o out.wav
 ```
@@ -147,13 +147,30 @@ curl -s -X POST http://127.0.0.1:54321/v1/tts/speak \
 | `response_format` | `wav`（默认）/`mp3`/`flac`/`opus`/`aac`/`pcm` |
 | `parameters` | 引擎自己的参数，原样透传 |
 
-**Drama 3 的表演标签写在文本里**，运行时自己解析：
+**Drama 3 的表演标签写在文本里**（官方叫 point tags），**用方括号**，运行时自己解析：
 
 ```
-(mumbles) 说了不要开枪……没有子弹的啊……
+[mumbles] 说了不要开枪……没有子弹的啊……
 ```
 
-`(mumbles)` = 喃喃地说，`(whispers)` = 耳语，`(laughs)`、`(sighs)`、`(coughs)`、`(crying)`、`(gasps)`、`(humming)` 同理。台词里的 `……` 会被读成停顿。
+标签要写在**事件发生的位置**——想在哪句话前面叹口气，就把 `[sighs]` 写在那句话前面：
+
+```
+[sighs] 你终于来了。[laughs] 不过嘛，还好赶上了。
+```
+
+常用的是 `[laughs]` `[whispers]` `[sighs]` `[mumbles]` `[coughs]` `[crying]` `[gasps]` `[humming]` `[chuckle]` `[grunts]` `[screams]`。
+
+**拟声词/音效也行**，同一个机制：
+
+```
+[chicken clucks] 咯咯咯        →  0.8 秒的一声鸡叫
+[cluck] 咯咯咯                 →  0.7 秒
+[chicken clucking] 咯咯咯      →  0.8 秒
+[clucking] 咯咯咯              →  47 秒（模型会一直叫下去，别单独用）
+```
+
+台词里的 `……` 会被读成停顿。
 
 **多角色**（Drama 3 专属）：
 
