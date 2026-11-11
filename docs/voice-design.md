@@ -456,6 +456,32 @@ curl -s -X POST http://127.0.0.1:54321/v1/tts/speak \
   }' -o 第二句.wav
 ```
 
+### 8.3b 怎么判断一个声音能不能配 Drama 3
+
+**看 `engine_config` 里有什么键**：
+
+| `engine_config` 里有 | 来源 | 怎么用 |
+|---|---|---|
+| `voice_design_prompt` | **设计**出来的 | 音色只存在于那段文字提示里 → **只能配 `qwen3-tts-1.7b-voicedesign-mlx`** |
+| `reference_audio` | **克隆**出来的 | 音色是一段真实录音 → **配它 `model_id` 里写的那个模型** |
+
+Drama 3 只认参考音频，不认文字提示。把一个「设计」出来的声音交给 Drama 3，
+它会用自己的默认嗓子说话——能出声，但不是那个声音。
+
+随时查一遍自己的声音库：
+
+```bash
+curl -s http://127.0.0.1:54321/v1/tts/voices | python3 -c "
+import json,sys
+for v in json.load(sys.stdin):
+    cfg = v['engine_config']
+    kind = '设计' if 'voice_design_prompt' in cfg else ('克隆' if 'reference_audio' in cfg else '其它')
+    use = v['model_id'] if kind=='克隆' else 'qwen3-tts-1.7b-voicedesign-mlx'
+    print(f\"{v['id']:<16}{v['name']:<22}{kind:<6}用 {use}\")"
+```
+
+想让一个「设计」的声音也能用 Drama 3，就按 8.3 克隆一次——拿它的试听样本当参考音频。
+
 ### 8.4 参考音频的要求
 
 | 要求 | 说明 |
@@ -464,7 +490,7 @@ curl -s -X POST http://127.0.0.1:54321/v1/tts/speak \
 | WAV | 应用会自己转成 44.1 kHz 单声道 16bit 的 WAV 再发给引擎；**MP3/M4A 之类要先转成 WAV** |
 | 10 秒左右 | 太短音色不稳，太长会占内存 |
 | 单人 | 多人说话会混在一起 |
-| `reference_text` | 录音里说的**原话**（逐字）。写错或留空，音色会跑偏 |
+| `reference_text` | 录音里说的**原话**（逐字）。写错或留空，音色会跑偏。**Drama 3 强制要求**：不写会报 `references.0.text must be a string`（Qwen3-TTS 的克隆可以不写）|
 | 干净的环境 | 底噪和混响会被一起学进去 |
 
 转格式（需要 ffmpeg）：
