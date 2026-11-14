@@ -37,4 +37,6 @@ libc.workspace = true
 # switches the feature on for the test build and leaves the application
 # build untouched.
 [dev-dependencies]
+ai-scheduler.workspace = true
+serde_json.workspace = true
 tts-core = { path = ".", features = ["mock-engine"] }

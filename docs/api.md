@@ -360,6 +360,24 @@ curl -s -X POST http://127.0.0.1:54321/v1/chat/completions \
 
 普通补全：`POST /v1/completions`，字段是 `prompt` 不是 `messages`。
 
+语言模型的加载、卸载、固定跟语音模型用同一组接口：
+
+```bash
+# 加载（也会按需自动起引擎）
+curl -s -X POST http://127.0.0.1:54321/v1/tts/models/mlx-community--Qwen3.8-27B-4bit/load -d '{}'
+
+# 固定：空闲也不会被调度器挤掉
+curl -s -X POST http://127.0.0.1:54321/v1/tts/models/mlx-community--Qwen3.8-27B-4bit/pin -d '{}'
+curl -s -X POST http://127.0.0.1:54321/v1/tts/models/mlx-community--Qwen3.8-27B-4bit/unpin -d '{}'
+
+# 卸载
+curl -s -X POST http://127.0.0.1:54321/v1/tts/models/mlx-community--Qwen3.8-27B-4bit/unload -d '{}'
+```
+
+空闲多久会被自动回收，看 `/v1/tts/status` 里 `scheduler.tenants` 的 `ttl_secs`
+（默认 1800 秒）。**这个时间是从上一次请求算的，不是从加载算的** —— 一直在用
+的模型不会被收走。
+
 ---
 
 ## 5. 运行时（引擎）

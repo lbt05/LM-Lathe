@@ -390,14 +390,59 @@ impl LlmRuntimeManager {
         &self,
         model_id: &str,
         path: &str,
-        mut body: serde_json::Value,
+        body: serde_json::Value,
     ) -> TtsResult<serde_json::Value> {
         let runtime = match self.runtime(model_id) {
-            Some(runtime) if runtime.state == RuntimeState::Running => runtime,
+            Some(runtime) if runtime.state == RuntimeState::Running => {
+                if self.engine_alive(model_id) {
+                    runtime
+                } else {
+                    // The engine died on its own. The old runtime is cleaned
+                    // up and the model is started again, instead of sending
+                    // the request to an address that nobody listens on.
+                    self.unload_model(model_id).await.ok();
+                    self.load_model(model_id).await?
+                }
+            }
             _ => self.load_model(model_id).await?,
         };
+
+        // The request is registered with the scheduler. It refreshes the idle
+        // timer of the tenant and keeps the model from being taken away
+        // while it answers. Without it the scheduler counts the idle time
+        // from the moment the model was loaded, and takes a model that is in
+        // use away in the middle of a request.
+        let tenant_key = Self::tenant_key(model_id);
+        let registered = self.scheduler.begin_request(&tenant_key).is_ok();
+        if registered {
+            self.update_runtime(model_id, |runtime| {
+                runtime.active_requests = runtime.active_requests.saturating_add(1);
+                runtime.last_used_at = Some(Utc::now());
+            });
+        }
+
+        let result = self.forward_to(&runtime, path, body).await;
+
+        if registered {
+            self.update_runtime(model_id, |runtime| {
+                runtime.active_requests = runtime.active_requests.saturating_sub(1);
+                runtime.last_used_at = Some(Utc::now());
+            });
+            self.scheduler.end_request(&tenant_key).ok();
+        }
+        result
+    }
+
+    /// Sends the request to the server of the model.
+    async fn forward_to(
+        &self,
+        runtime: &LlmRuntime,
+        path: &str,
+        mut body: serde_json::Value,
+    ) -> TtsResult<serde_json::Value> {
         let endpoint = runtime
             .endpoint
+            .clone()
             .ok_or_else(|| TtsError::Engine("the model has no server".to_string()))?;
 
         // The server knows one model, the name in the request is only a label.
@@ -405,7 +450,7 @@ impl LlmRuntimeManager {
             let name = runtime
                 .server_model
                 .clone()
-                .unwrap_or_else(|| model_id.to_string());
+                .unwrap_or_else(|| runtime.model_id.clone());
             object.insert("model".to_string(), serde_json::json!(name));
         }
 
@@ -433,7 +478,7 @@ impl LlmRuntimeManager {
         // The answer carries the name the server knows the model by; the
         // caller asked for the model of the catalogue.
         if let Some(object) = answer.as_object_mut() {
-            object.insert("model".to_string(), serde_json::json!(model_id));
+            object.insert("model".to_string(), serde_json::json!(runtime.model_id));
         }
         Ok(answer)
     }
@@ -511,6 +556,38 @@ impl LlmRuntimeManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(runtime.model_id.clone(), runtime);
+    }
+
+    /// Changes the state of one runtime.
+    fn update_runtime(&self, model_id: &str, update: impl FnOnce(&mut LlmRuntime)) {
+        let mut runtimes = self.runtimes.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(runtime) = runtimes.get_mut(model_id) {
+            update(runtime);
+        }
+    }
+
+    /// `true` when the process of the engine is still running.
+    ///
+    /// The runtime keeps the state of the model, but the process of the
+    /// engine can die on its own. A model whose engine is gone is started
+    /// again, instead of answering with an error.
+    fn engine_alive(&self, model_id: &str) -> bool {
+        let mut children = self.children.lock().unwrap_or_else(|e| e.into_inner());
+        match children.get_mut(model_id) {
+            Some(child) => matches!(child.try_wait(), Ok(None)),
+            None => false,
+        }
+    }
+
+    /// Pins or unpins a model.
+    ///
+    /// A pinned model is never taken away by the scheduler, so it stays in
+    /// memory even when it is idle.
+    pub fn set_pinned(&self, model_id: &str, pinned: bool) -> TtsResult<()> {
+        let tenant_key = Self::tenant_key(model_id);
+        self.scheduler.set_pinned(&tenant_key, pinned)?;
+        self.update_runtime(model_id, |runtime| runtime.pinned = pinned);
+        Ok(())
     }
 }
 

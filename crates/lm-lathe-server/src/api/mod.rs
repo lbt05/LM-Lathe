@@ -1128,7 +1128,11 @@ async fn pin_model(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    state.service.manager.set_pinned(&id, true)?;
+    if is_language_model(&state, &id) {
+        state.service.llm.set_pinned(&id, true)?;
+    } else {
+        state.service.manager.set_pinned(&id, true)?;
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1137,7 +1141,11 @@ async fn unpin_model(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    state.service.manager.set_pinned(&id, false)?;
+    if is_language_model(&state, &id) {
+        state.service.llm.set_pinned(&id, false)?;
+    } else {
+        state.service.manager.set_pinned(&id, false)?;
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
