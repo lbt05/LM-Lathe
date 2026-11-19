@@ -18,6 +18,12 @@ use crate::types::ModelFamily;
 /// never managed twice, exactly as required by the specification.
 pub struct AdapterFactory {
     engine: Arc<SGLangOmniAdapter>,
+    /// The adapter that serves the mock models.
+    ///
+    /// The tests bring their own, so that they can watch what the engine
+    /// does while it answers.
+    #[cfg(feature = "mock-engine")]
+    mock: Option<Arc<dyn TTSAdapter>>,
 }
 
 impl AdapterFactory {
@@ -26,7 +32,18 @@ impl AdapterFactory {
         let engine = SGLangOmniAdapter::new(settings);
         engine.register_protocol(ModelFamily::Qwen3Tts, Arc::new(Qwen3TTSProtocol));
         engine.register_protocol(ModelFamily::FishDrama3, Arc::new(FishDrama3Protocol));
-        Self { engine }
+        Self {
+            engine,
+            #[cfg(feature = "mock-engine")]
+            mock: None,
+        }
+    }
+
+    /// Serves the mock models with the given adapter.
+    #[cfg(feature = "mock-engine")]
+    pub fn with_mock_adapter(mut self, adapter: Arc<dyn TTSAdapter>) -> Self {
+        self.mock = Some(adapter);
+        self
     }
 
     /// The shared engine adapter.
@@ -76,7 +93,10 @@ impl AdapterFactory {
                 Arc::new(FishDrama3Adapter::new(self.engine.clone())) as Arc<dyn TTSAdapter>
             }
             #[cfg(feature = "mock-engine")]
-            ModelFamily::Mock => Arc::new(MockAdapter::new()) as Arc<dyn TTSAdapter>,
+            ModelFamily::Mock => match &self.mock {
+                Some(adapter) => adapter.clone(),
+                None => Arc::new(MockAdapter::new()) as Arc<dyn TTSAdapter>,
+            },
             ModelFamily::Llm => {
                 return Err(TtsError::AdapterNotFound(
                     "the language models are served by their own runtime".to_string(),

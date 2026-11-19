@@ -4,7 +4,9 @@
 //! makes the whole pipeline - runtime manager, scheduler, voice library,
 //! audio manager and HTTP API - testable on machines without a GPU.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
+use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -15,10 +17,22 @@ use crate::types::{
 };
 
 /// Adapter that synthesises a deterministic tone.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MockAdapter {
     handle: RwLock<Option<RuntimeHandle>>,
     sample_rate: u32,
+    /// How long a request takes, so that a test can keep it in flight.
+    delay: Duration,
+    /// The requests that are served at this moment.
+    running: AtomicUsize,
+    /// The highest number of requests that were served at the same time.
+    peak: AtomicUsize,
+}
+
+impl Default for MockAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MockAdapter {
@@ -27,7 +41,27 @@ impl MockAdapter {
         Self {
             handle: RwLock::new(None),
             sample_rate: 24_000,
+            delay: Duration::ZERO,
+            running: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
         }
+    }
+
+    /// Creates a mock adapter whose requests take `delay`.
+    ///
+    /// The real engines serve one request at a time. A mock that takes its
+    /// time lets a test watch what the runtime manager does with a burst of
+    /// requests.
+    pub fn with_delay(delay: Duration) -> Self {
+        Self {
+            delay,
+            ..Self::new()
+        }
+    }
+
+    /// The highest number of requests the adapter served at the same time.
+    pub fn peak_concurrency(&self) -> usize {
+        self.peak.load(Ordering::SeqCst)
     }
 
     /// Generates the WAV payload for a request.
@@ -113,6 +147,15 @@ impl TTSAdapter for MockAdapter {
                 "the mock engine is not running".to_string(),
             ));
         }
+        // The request is counted, so that a test can see how many of them
+        // the runtime manager serves at the same time. The count is given
+        // back when the request is over, also when it is cancelled.
+        let running = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(running, Ordering::SeqCst);
+        let _counter = RequestCounter(&self.running);
+        if !self.delay.is_zero() {
+            tokio::time::sleep(self.delay).await;
+        }
         Ok(self.render(&request))
     }
 
@@ -122,5 +165,15 @@ impl TTSAdapter for MockAdapter {
 
     async fn get_logs(&self, _handle: &RuntimeHandle) -> TtsResult<String> {
         Ok("mock engine: no logs available".to_string())
+    }
+}
+
+/// Counts the requests that are served, and gives the count back when the
+/// request is over.
+struct RequestCounter<'a>(&'a AtomicUsize);
+
+impl Drop for RequestCounter<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }

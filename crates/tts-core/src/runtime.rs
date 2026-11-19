@@ -151,6 +151,12 @@ struct Inner {
     active: Mutex<Option<ActiveRuntime>>,
     adapters: Mutex<HashMap<String, Arc<dyn TTSAdapter>>>,
     engine_gate: tokio::sync::Mutex<()>,
+    /// The engine serves one request at a time.
+    ///
+    /// Its own queue holds two waiting requests and refuses the rest with
+    /// "the request queue is full". The gateway keeps the queue instead: a
+    /// burst of requests waits its turn here instead of being refused.
+    synthesis_gate: tokio::sync::Semaphore,
     /// Weak handle to ourselves, used by the eviction callbacks.
     self_weak: std::sync::Weak<Inner>,
 }
@@ -184,6 +190,7 @@ impl TTSRuntimeManager {
             active: Mutex::new(None),
             adapters: Mutex::new(HashMap::new()),
             engine_gate: tokio::sync::Mutex::new(()),
+            synthesis_gate: tokio::sync::Semaphore::new(1),
             self_weak: weak.clone(),
         });
         Arc::new(Self { inner })
@@ -287,7 +294,10 @@ impl Inner {
                     return Ok(());
                 };
                 let model_id = key.strip_prefix("tts:").unwrap_or(&key).to_string();
-                inner.unload_model(&model_id).await.map_err(|err| {
+                // The eviction does not wait for the queue of the requests: a
+                // request that waits for the engine would wait for the
+                // eviction that waits for it.
+                inner.unload_model_now(&model_id).await.map_err(|err| {
                     ai_scheduler::SchedulerError::EvictionFailed {
                         tenant: key.clone(),
                         reason: err.to_string(),
@@ -391,6 +401,10 @@ impl Inner {
 
     /// Loads a model and makes it the active engine instance.
     async fn load_model(&self, model_id: &str) -> TtsResult<TTSRuntime> {
+        // The load waits for the requests that are queued: the engine of the
+        // model that runs is stopped, and a queued request would load its
+        // own model again right away.
+        let _permit = self.synthesis_permit().await?;
         // Only one model may occupy the engine at a time.
         let _gate = self.engine_gate.lock().await;
         self.load_model_locked(model_id).await
@@ -548,7 +562,29 @@ impl Inner {
     }
 
     /// Unloads a model.
+    ///
+    /// The unload waits for the requests that are queued: the engine of the
+    /// model is stopped, and a request that waits would load the model again
+    /// right away.
     async fn unload_model(&self, model_id: &str) -> TtsResult<()> {
+        let _permit = tokio::time::timeout(
+            self.settings.unload_timeout,
+            self.synthesis_permit(),
+        )
+        .await
+        .map_err(|_| {
+            TtsError::Engine(format!(
+                "model `{model_id}` still has in-flight requests and was not unloaded"
+            ))
+        })??;
+        self.unload_model_now(model_id).await
+    }
+
+    /// Unloads a model without waiting for the queue of the requests.
+    ///
+    /// The eviction of the scheduler uses this path: a request that waits
+    /// for the engine would wait for the eviction that waits for it.
+    async fn unload_model_now(&self, model_id: &str) -> TtsResult<()> {
         let Some(active) = self.active_runtime() else {
             self.update_runtime(model_id, |runtime| {
                 if runtime.state != RuntimeState::Failed {
@@ -626,6 +662,21 @@ impl Inner {
         Ok(adapter)
     }
 
+    /// Waits for the engine to be free.
+    ///
+    /// The engine has a single worker and a queue of two: it refuses the
+    /// request that does not fit in it. The gateway keeps the queue instead,
+    /// so a burst of requests waits its turn here instead of being refused.
+    ///
+    /// The permit is given back when the request is over, also when it is
+    /// cancelled: a client that hangs up must not block the queue.
+    async fn synthesis_permit(&self) -> TtsResult<tokio::sync::SemaphorePermit<'_>> {
+        self.synthesis_gate
+            .acquire()
+            .await
+            .map_err(|_| TtsError::Engine("the synthesis gate is closed".to_string()))
+    }
+
     /// Synthesises speech.
     ///
     /// The model is loaded on demand when `auto_load` is enabled.
@@ -652,6 +703,14 @@ impl Inner {
         if let Some(voice) = &voice {
             adapter.apply_voice(&mut request, voice).await?;
         }
+
+        // The engine has a single worker and a queue of two: it refuses the
+        // request that does not fit in it. The gateway keeps the queue, so
+        // every request of a burst is answered instead of failing.
+        //
+        // The permit is given back when the request is over, also when it
+        // is cancelled: a client that hangs up must not block the queue.
+        let _permit = self.synthesis_permit().await?;
 
         // The engine gate is held while the model is selected and while the
         // request is registered. From that moment on the model may not be

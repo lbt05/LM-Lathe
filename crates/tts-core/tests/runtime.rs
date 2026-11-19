@@ -3,11 +3,21 @@
 
 mod common;
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use ai_scheduler::{Scheduler, SchedulerConfig};
 use common::TempDir;
+use tts_core::adapter::{AdapterFactory, EngineSettings, MockAdapter};
+use tts_core::audio::AudioManager;
+use tts_core::hardware::HardwareProfile;
 use tts_core::paths::AppPaths;
 use tts_core::registry::TTSModelSpec;
+use tts_core::runtime::RuntimeSettings;
 use tts_core::service::TtsService;
 use tts_core::types::{EngineMode, ModelFamily, RuntimeState, TTSRequest, TtsFeature};
+use tts_core::voice::fs::FsVoiceLibrary;
+use tts_core::voice::VoiceLibrary;
 use tts_core::voice::NewVoiceProfile;
 
 fn service(dir: &TempDir) -> std::sync::Arc<TtsService> {
@@ -230,4 +240,124 @@ async fn a_model_that_is_not_installed_is_refused_immediately() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("not installed"));
+}
+
+/// A runtime manager with a mock engine that takes its time.
+fn manager_with_mock(
+    dir: &TempDir,
+    delay: Duration,
+) -> (
+    Arc<tts_core::runtime::TTSRuntimeManager>,
+    Arc<MockAdapter>,
+) {
+    let paths = AppPaths::with_root(dir.path());
+    paths.ensure().expect("the directories are there");
+
+    // The mock takes its time, so that the requests would overlap if the
+    // manager did not keep the queue.
+    let mock = Arc::new(MockAdapter::with_delay(delay));
+    let factory = AdapterFactory::new(EngineSettings::default()).with_mock_adapter(mock.clone());
+
+    let registry = Arc::new(tts_core::registry::TTSModelRegistry::builtin());
+    registry.insert(TTSModelSpec::mock_spec());
+    registry.insert(second_mock_model());
+    let scheduler = Scheduler::new(SchedulerConfig {
+        total_bytes: 8 * 1024 * 1024 * 1024,
+        reserved_bytes: 0,
+        ..Default::default()
+    });
+    let library: Arc<dyn VoiceLibrary> = Arc::new(FsVoiceLibrary::new(paths.voices_root()));
+    let audio = Arc::new(AudioManager::new(&paths));
+    let manager = tts_core::runtime::TTSRuntimeManager::new(
+        registry,
+        scheduler,
+        library,
+        audio,
+        factory,
+        HardwareProfile::new("macos", "aarch64", true, false, 64 * 1024 * 1024 * 1024),
+        RuntimeSettings::default(),
+    );
+    (manager, mock)
+}
+
+/// A burst of requests is answered one after the other.
+///
+/// The engines serve one request at a time and their queue is small: they
+/// refuse a request with "the request queue is full" when it does not fit in
+/// it. The runtime manager keeps the queue, so every request of a burst is
+/// answered instead of failing.
+#[tokio::test]
+async fn a_burst_of_requests_is_answered_one_after_the_other() {
+    let dir = TempDir::new("runtime-burst");
+    let (manager, mock) = manager_with_mock(&dir, Duration::from_millis(200));
+
+    // Four requests at the same time.
+    let mut tasks = Vec::new();
+    for index in 0..4 {
+        let manager = manager.clone();
+        tasks.push(tokio::spawn(async move {
+            manager
+                .synthesize(TTSRequest::new("mock-echo", format!("hello {index}")))
+                .await
+        }));
+    }
+    for task in tasks {
+        task.await
+            .expect("the task did not panic")
+            .expect("every request is answered");
+    }
+
+    assert_eq!(
+        mock.peak_concurrency(),
+        1,
+        "the engine never serves two requests at the same time"
+    );
+
+    manager.unload_model("mock-echo").await.ok();
+}
+
+/// A model that is loaded by hand waits for the requests that are queued.
+///
+/// The requests of the queue want the model that runs. A load that does not
+/// wait for them would be undone right away: the next request of the queue
+/// would load its own model again.
+#[tokio::test]
+async fn a_manual_load_waits_for_the_requests_that_are_queued() {
+    let dir = TempDir::new("runtime-load");
+    let (manager, _mock) = manager_with_mock(&dir, Duration::from_millis(200));
+
+    // Two requests for the model that runs.
+    let mut tasks = Vec::new();
+    for index in 0..2 {
+        let manager = manager.clone();
+        tasks.push(tokio::spawn(async move {
+            manager
+                .synthesize(TTSRequest::new("mock-echo", format!("hello {index}")))
+                .await
+        }));
+    }
+    // Let the requests reach the queue.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The model of another request is loaded by hand. It waits for the
+    // queue, so that it is not undone by the next request.
+    let loaded = manager
+        .load_model("mock-echo-2")
+        .await
+        .expect("the model is loaded");
+    assert_eq!(loaded.model_id, "mock-echo-2");
+
+    for task in tasks {
+        task.await
+            .expect("the task did not panic")
+            .expect("every request is answered");
+    }
+
+    assert_eq!(
+        manager.status().active_model.as_deref(),
+        Some("mock-echo-2"),
+        "the model that was loaded by hand is still the one that runs"
+    );
+
+    manager.unload_model("mock-echo-2").await.ok();
 }
