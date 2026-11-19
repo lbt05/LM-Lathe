@@ -11,6 +11,7 @@
 //! * [`voice`] stores the voice assets independently of any runtime, and
 //! * [`audio`] stores, inspects and converts the generated audio.
 
+mod active_request;
 pub mod adapter;
 pub mod adopt;
 pub mod audio;

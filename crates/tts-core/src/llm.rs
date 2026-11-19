@@ -15,6 +15,7 @@ use ai_scheduler::{evictor_from_fn, Evictor, MemoryLease, Scheduler, TenantKind,
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::active_request::ActiveRequest;
 use crate::engine_assets::EngineAssetManager;
 use crate::error::{TtsError, TtsResult};
 use crate::registry::TTSModelRegistry;
@@ -22,6 +23,13 @@ use crate::types::RuntimeState;
 
 /// How long the runtime waits for the server to answer.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// How long a request may take before the runtime gives up on it.
+///
+/// A request that is never answered would keep the tenant busy forever, and
+/// a busy tenant is never taken away by the scheduler: its memory would stay
+/// booked and no bigger model would fit any more.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// State of one language model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -412,25 +420,48 @@ impl LlmRuntimeManager {
         // while it answers. Without it the scheduler counts the idle time
         // from the moment the model was loaded, and takes a model that is in
         // use away in the middle of a request.
+        //
+        // The guard gives the mark back when it is dropped, also when the
+        // request is cancelled: a client that hangs up must not leave the
+        // tenant busy, or the scheduler would never take the model back.
         let tenant_key = Self::tenant_key(model_id);
-        let registered = self.scheduler.begin_request(&tenant_key).is_ok();
-        if registered {
-            self.update_runtime(model_id, |runtime| {
-                runtime.active_requests = runtime.active_requests.saturating_add(1);
-                runtime.last_used_at = Some(Utc::now());
-            });
-        }
+        let guard = self.begin_active_request(model_id, &tenant_key);
 
         let result = self.forward_to(&runtime, path, body).await;
 
-        if registered {
-            self.update_runtime(model_id, |runtime| {
-                runtime.active_requests = runtime.active_requests.saturating_sub(1);
-                runtime.last_used_at = Some(Utc::now());
-            });
-            self.scheduler.end_request(&tenant_key).ok();
-        }
+        drop(guard);
         result
+    }
+
+    /// Marks the tenant of a model as busy and returns the guard that gives
+    /// the mark back.
+    ///
+    /// The mark keeps the model from being taken away while it answers. The
+    /// guard gives it back when it is dropped, also when the request is
+    /// cancelled: a client that hangs up in the middle of a request must not
+    /// leave the tenant busy forever, or the scheduler would never evict the
+    /// model and its memory would stay booked.
+    fn begin_active_request(&self, model_id: &str, tenant_key: &str) -> Option<ActiveRequest> {
+        if self.scheduler.begin_request(tenant_key).is_err() {
+            return None;
+        }
+        self.update_runtime(model_id, |runtime| {
+            runtime.active_requests = runtime.active_requests.saturating_add(1);
+            runtime.last_used_at = Some(Utc::now());
+        });
+        let scheduler = self.scheduler.clone();
+        let tenant_key = tenant_key.to_string();
+        let model_id = model_id.to_string();
+        let manager = self.self_weak.upgrade();
+        Some(ActiveRequest::new(move || {
+            if let Some(manager) = manager {
+                manager.update_runtime(&model_id, |runtime| {
+                    runtime.active_requests = runtime.active_requests.saturating_sub(1);
+                    runtime.last_used_at = Some(Utc::now());
+                });
+            }
+            scheduler.end_request(&tenant_key).ok();
+        }))
     }
 
     /// Sends the request to the server of the model.
@@ -454,7 +485,10 @@ impl LlmRuntimeManager {
             object.insert("model".to_string(), serde_json::json!(name));
         }
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .map_err(|err| TtsError::Engine(format!("the client is broken: {err}")))?;
         let response = client
             .post(format!("{endpoint}{path}"))
             .json(&body)

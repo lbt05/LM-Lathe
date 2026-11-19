@@ -18,6 +18,7 @@ use ai_scheduler::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::active_request::ActiveRequest;
 use crate::adapter::factory::AdapterFactory;
 use crate::adapter::TTSAdapter;
 use crate::audio::AudioManager;
@@ -351,6 +352,35 @@ impl Inner {
         update(runtime);
     }
 
+    /// Marks the tenant of a model as busy and returns the guard that gives
+    /// the mark back.
+    ///
+    /// The mark keeps the model from being unloaded while it answers. The
+    /// guard gives it back when it is dropped, also when the request is
+    /// cancelled: a client that hangs up in the middle of a request must not
+    /// leave the tenant busy forever, or the scheduler would never evict the
+    /// model and its memory would stay booked.
+    fn begin_active_request(&self, model_id: &str, tenant_key: &str) -> TtsResult<ActiveRequest> {
+        self.scheduler.begin_request(tenant_key)?;
+        self.update_runtime(model_id, |runtime| {
+            runtime.active_requests = runtime.active_requests.saturating_add(1);
+            runtime.last_used_at = Some(Utc::now());
+        });
+        let scheduler = self.scheduler.clone();
+        let tenant_key = tenant_key.to_string();
+        let model_id = model_id.to_string();
+        let inner = self.self_weak.upgrade();
+        Ok(ActiveRequest::new(move || {
+            if let Some(inner) = inner {
+                inner.update_runtime(&model_id, |runtime| {
+                    runtime.active_requests = runtime.active_requests.saturating_sub(1);
+                    runtime.last_used_at = Some(Utc::now());
+                });
+            }
+            scheduler.end_request(&tenant_key).ok();
+        }))
+    }
+
     /// The runtime that currently occupies the engine.
     fn active_runtime(&self) -> Option<ActiveRuntime> {
         self.active
@@ -626,25 +656,23 @@ impl Inner {
         // The engine gate is held while the model is selected and while the
         // request is registered. From that moment on the model may not be
         // unloaded, which protects the request from a concurrent model switch.
+        //
+        // The guard gives the mark of the busy tenant back when it is
+        // dropped, also when the request is cancelled: a client that hangs
+        // up must not leave the tenant busy, or the scheduler would never
+        // take the model back.
         let tenant_key = Self::tenant_key(&spec.id);
-        let active = {
+        let (active, guard) = {
             let _gate = self.engine_gate.lock().await;
             let active = self.ensure_active_locked(&spec).await?;
-            self.scheduler.begin_request(&tenant_key)?;
-            self.update_runtime(&spec.id, |runtime| {
-                runtime.active_requests = runtime.active_requests.saturating_add(1);
-                runtime.last_used_at = Some(Utc::now());
-            });
-            active
+            let guard = self.begin_active_request(&spec.id, &tenant_key)?;
+            (active, guard)
         };
 
         let result = active.adapter.synthesize(request.clone()).await;
 
-        self.update_runtime(&spec.id, |runtime| {
-            runtime.active_requests = runtime.active_requests.saturating_sub(1);
-            runtime.last_used_at = Some(Utc::now());
-        });
-        self.scheduler.end_request(&tenant_key).ok();
+        // The model is free again as soon as the engine answered.
+        drop(guard);
 
         let mut output = result?;
         let mut file_path = None;
@@ -759,5 +787,65 @@ fn empty_runtime(spec: &TTSModelSpec) -> TTSRuntime {
         estimated_memory: spec.estimated_memory_bytes,
         actual_memory: None,
         checkpoint_bytes: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::AppPaths;
+    use crate::registry::TTSModelSpec;
+    use crate::service::TtsService;
+
+    /// A dropped request gives the mark of a busy tenant back.
+    ///
+    /// A request that is cancelled drops the guard, so a client that hangs up
+    /// does not keep the tenant busy forever. A busy tenant is never taken
+    /// away by the scheduler, so its memory would stay booked and no bigger
+    /// model would fit any more.
+    #[tokio::test]
+    async fn a_dropped_request_gives_the_mark_back() {
+        let root = std::env::temp_dir().join(format!("lm-lathe-tts-{}", std::process::id()));
+        let paths = AppPaths::with_root(&root);
+        paths.ensure().expect("the directories are there");
+        let service = TtsService::with_paths(paths).expect("the service");
+        service.registry.insert(TTSModelSpec::mock_spec());
+        service
+            .manager
+            .load_model("mock-echo")
+            .await
+            .expect("the model starts");
+
+        let inner = service.manager.inner.clone();
+        let key = Inner::tenant_key("mock-echo");
+
+        let guard = inner
+            .begin_active_request("mock-echo", &key)
+            .expect("the request is registered");
+        let busy = inner
+            .scheduler
+            .tenant(&key)
+            .expect("the tenant is known")
+            .active_requests;
+        assert_eq!(busy, 1, "the tenant is busy");
+
+        drop(guard);
+
+        let idle = inner
+            .scheduler
+            .tenant(&key)
+            .expect("the tenant is known")
+            .active_requests;
+        assert_eq!(idle, 0, "the mark is given back");
+        assert_eq!(
+            inner
+                .runtime("mock-echo")
+                .expect("the runtime is known")
+                .active_requests,
+            0,
+            "the runtime knows that the request is over"
+        );
+
+        service.manager.unload_model("mock-echo").await.ok();
     }
 }

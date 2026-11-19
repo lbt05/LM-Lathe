@@ -249,6 +249,73 @@ async fn a_language_model_that_answers_is_not_evicted() {
     manager.unload_model(MODEL).await.ok();
 }
 
+/// A request that is cancelled gives the mark of a busy tenant back.
+///
+/// A client that hangs up in the middle of a request must not leave the
+/// tenant busy: a busy tenant is never taken away by the scheduler, so a
+/// single cancelled request would keep the memory of the model booked and no
+/// bigger model would fit any more.
+#[tokio::test]
+async fn a_cancelled_request_frees_the_tenant() {
+    let Some(fixture) = Fixture::new("llm-cancel") else {
+        return;
+    };
+    let manager = fixture.manager.clone();
+    let scheduler = fixture.scheduler.clone();
+    let key = fixture.tenant_key();
+
+    manager.load_model(MODEL).await.expect("the model starts");
+
+    let chat = {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            manager
+                .chat(MODEL, json!({"messages": [{"role": "user", "content": "hi"}]}))
+                .await
+        })
+    };
+
+    // Wait until the request reached the scheduler.
+    let mut registered = false;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let tenant = scheduler.tenant(&key).expect("the tenant is known");
+        if tenant.active_requests > 0 {
+            registered = true;
+            break;
+        }
+    }
+    assert!(registered, "the request is registered with the scheduler");
+
+    // The client hangs up in the middle of the request.
+    chat.abort();
+    let _ = chat.await;
+
+    // The mark is given back.
+    let mut freed = false;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let tenant = scheduler.tenant(&key).expect("the tenant is known");
+        if tenant.active_requests == 0 {
+            freed = true;
+            break;
+        }
+    }
+    assert!(freed, "the cancelled request gave the mark back");
+    assert_eq!(
+        manager
+            .runtime(MODEL)
+            .expect("the runtime is known")
+            .active_requests,
+        0,
+        "the runtime knows that the request is over"
+    );
+
+    // The model can be taken back, so a bigger model fits next to it.
+    let evicted = scheduler.sweep_expired().await.expect("the sweep runs");
+    assert_eq!(evicted, vec![key.clone()], "the model can be taken back");
+}
+
 /// A pinned language model stays in memory, even when it is idle.
 #[tokio::test]
 async fn a_language_model_can_be_pinned() {
