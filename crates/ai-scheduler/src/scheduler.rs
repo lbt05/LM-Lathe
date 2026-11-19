@@ -154,9 +154,14 @@ impl Scheduler {
     /// Reserves `bytes` for `key`.
     ///
     /// If the pool is too small, unpinned and idle tenants are evicted in
-    /// least-recently-used order until the request can be satisfied. The call
-    /// fails with [`SchedulerError::InsufficientMemory`] when nothing can be
-    /// evicted and with [`SchedulerError::Timeout`] when the deadline passes.
+    /// least-recently-used order until the request can be satisfied.
+    ///
+    /// A tenant that is busy with a request is never evicted, but it may be
+    /// evicted once the request is over. When the busy tenants hold enough
+    /// memory for the request, the call waits for them instead of failing at
+    /// once, and it fails with [`SchedulerError::Timeout`] when the deadline
+    /// passes. It fails with [`SchedulerError::InsufficientMemory`] when the
+    /// memory would not be enough even after every tenant gave it back.
     pub async fn acquire(
         self: &Arc<Self>,
         key: &str,
@@ -197,12 +202,32 @@ impl Scheduler {
                     .min_by_key(|tenant| tenant.last_used_at)
                     .map(|tenant| tenant.key.clone());
                 match candidate {
-                    Some(candidate) => candidate,
+                    Some(candidate) => Some(candidate),
                     None => {
-                        return Err(SchedulerError::InsufficientMemory {
-                            requested: bytes,
-                            available,
-                        })
+                        // Nothing may be evicted right now. A tenant that is
+                        // busy gives its memory back once its request is
+                        // over, so the request waits for it instead of
+                        // failing at once. A pinned tenant never gives its
+                        // memory back: the request fails at once.
+                        let waiting: u64 = state
+                            .tenants
+                            .values()
+                            .filter(|tenant| {
+                                tenant.key != key
+                                    && !tenant.pinned
+                                    && tenant.active_requests > 0
+                                    && tenant.state.is_active()
+                                    && tenant.evictor.is_some()
+                            })
+                            .map(|tenant| tenant.reserved_bytes)
+                            .sum();
+                        if available.saturating_add(waiting) < bytes {
+                            return Err(SchedulerError::InsufficientMemory {
+                                requested: bytes,
+                                available,
+                            });
+                        }
+                        None
                     }
                 }
             };
@@ -211,7 +236,12 @@ impl Scheduler {
                 return Err(SchedulerError::Timeout(timeout));
             }
 
-            self.evict(&candidate).await?;
+            match candidate {
+                Some(candidate) => self.evict(&candidate).await?,
+                // Every tenant that holds memory is busy. The request waits
+                // for one of them to become idle.
+                None => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
         }
     }
 

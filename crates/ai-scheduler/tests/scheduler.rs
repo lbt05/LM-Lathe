@@ -132,7 +132,64 @@ async fn busy_tenants_are_never_evicted() {
     scheduler.begin_request("llm:a").unwrap();
 
     scheduler.register_tenant("llm:b", TenantKind::Llm, 600, None, None);
-    let error = scheduler.acquire("llm:b", 600, None).await.unwrap_err();
+    // The busy tenant holds enough memory for the request, so the request
+    // waits for it instead of failing at once. It times out: the tenant
+    // stays busy.
+    let error = scheduler
+        .acquire("llm:b", 600, Some(Duration::from_millis(300)))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ai_scheduler::SchedulerError::Timeout(_)
+    ));
+    assert_eq!(evicted.load(Ordering::SeqCst), 0);
+    assert!(scheduler.tenant("llm:a").is_some());
+}
+
+#[tokio::test]
+async fn a_request_waits_for_a_busy_tenant_that_goes_idle() {
+    let scheduler = scheduler(1000);
+    let (evicted, evictor) = eviction_counter();
+    scheduler.register_tenant("llm:a", TenantKind::Llm, 500, None, Some(evictor));
+    let _lease = scheduler.acquire("llm:a", 500, None).await.unwrap();
+    scheduler.begin_request("llm:a").unwrap();
+
+    scheduler.register_tenant("llm:b", TenantKind::Llm, 600, None, None);
+    // The request of the second tenant waits for the first one to be done.
+    let waiter = {
+        let scheduler = scheduler.clone();
+        tokio::spawn(async move { scheduler.acquire("llm:b", 600, None).await })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(evicted.load(Ordering::SeqCst), 0, "the busy tenant stays");
+
+    // The request of the first tenant is over: its memory may be taken.
+    scheduler.end_request("llm:a").unwrap();
+    let lease = waiter
+        .await
+        .expect("the task did not panic")
+        .expect("the request is answered");
+    assert_eq!(evicted.load(Ordering::SeqCst), 1);
+    assert_eq!(lease.bytes(), 600);
+}
+
+#[tokio::test]
+async fn a_pinned_tenant_is_not_waited_for() {
+    let scheduler = scheduler(1000);
+    let (evicted, evictor) = eviction_counter();
+    scheduler.register_tenant("llm:a", TenantKind::Llm, 500, None, Some(evictor));
+    let _lease = scheduler.acquire("llm:a", 500, None).await.unwrap();
+    scheduler.begin_request("llm:a").unwrap();
+    scheduler.set_pinned("llm:a", true).unwrap();
+
+    scheduler.register_tenant("llm:b", TenantKind::Llm, 600, None, None);
+    // A pinned tenant never gives its memory back: the request fails at
+    // once instead of waiting for a tenant that stays.
+    let error = scheduler
+        .acquire("llm:b", 600, Some(Duration::from_millis(300)))
+        .await
+        .unwrap_err();
     assert!(matches!(
         error,
         ai_scheduler::SchedulerError::InsufficientMemory { .. }
