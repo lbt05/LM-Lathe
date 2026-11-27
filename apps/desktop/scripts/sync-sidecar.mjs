@@ -84,13 +84,28 @@ function fetchUv() {
   }
 
   const archive = `uv-${triple}.tar.gz`;
-  const url = `https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${archive}`;
+  // Some networks cannot reach GitHub; a mirror can take its place.
+  const url =
+    process.env.LM_LATHE_UV_URL ??
+    `https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${archive}`;
   const scratch = mkdtempSync(join(tmpdir(), "lm-lathe-uv-"));
   try {
     console.log(`[sidecar] fetching uv ${UV_VERSION} …`);
-    execFileSync("curl", ["-sSfL", "-o", join(scratch, archive), url], {
-      stdio: "inherit",
-    });
+    execFileSync(
+      "curl",
+      [
+        "-sSfL",
+        "--retry",
+        "5",
+        "--retry-delay",
+        "3",
+        "--retry-all-errors",
+        "-o",
+        join(scratch, archive),
+        url,
+      ],
+      { stdio: "inherit" },
+    );
     execFileSync("tar", ["-xzf", join(scratch, archive), "-C", scratch], {
       stdio: "inherit",
     });

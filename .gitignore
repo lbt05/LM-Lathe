@@ -14,3 +14,10 @@ apps/desktop/dist/
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/binaries/
+
+# Linux installation packages
+/dist/
+
+# The AppImage tools, fetched by scripts/linux/fetch-appimage-tools.sh
+/scripts/linux/tools/*
+!/scripts/linux/tools/.gitkeep
