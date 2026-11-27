@@ -99,6 +99,61 @@ LM-Lathe.app/Contents/MacOS/
 是单个静态二进制，直接下载对应平台的 release；已经下过的不会重复下载，所以没有网
 络也能打包。
 
+### Linux 安装包
+
+Linux 的包**不能在 macOS 上直接构建**：Tauri 的外壳要链接 WebKitGTK，那是 Linux 才
+有的库。所以构建整个跑在容器里——镜像里备好了 WebKitGTK、Rust 和 Node。基础镜像
+是 Ubuntu 22.04（glibc 2.35），产物在 Ubuntu 22.04 / 24.04 / Debian 12 上都能跑。
+
+```bash
+scripts/build-linux.sh                     # x86_64，.deb + .AppImage
+scripts/build-linux.sh --arch aarch64      # arm64
+scripts/build-linux.sh --bundles deb       # 只要 Debian 包
+```
+
+需要 Docker 或 Podman（`CONTAINER_CLI="sudo podman"` 可以换）。源码以只读方式挂进容
+器，编译发生在容器里，产物拷回 `dist/linux/<arch>/`：
+
+```
+dist/linux/x86_64/
+├── LM-Lathe_0.1.0_amd64.deb        23 MB   Debian / Ubuntu
+└── LM-Lathe_0.1.0_amd64.AppImage   96 MB   免安装的单文件
+```
+
+两个包里都是**前后端齐全**的：`lm-lathe`（窗口程序）、`lm-lathe-server`（后端）、
+`uv`（装 Python 引擎用的工具）。
+
+安装与运行：
+
+```bash
+sudo apt install ./LM-Lathe_0.1.0_amd64.deb   # 依赖 libwebkit2gtk-4.1-0、libgtk-3-0
+chmod +x LM-Lathe_0.1.0_amd64.AppImage && ./LM-Lathe_0.1.0_amd64.AppImage
+```
+
+网络受限的地方可以指到镜像上（速度差别很大）：
+
+```bash
+scripts/build-linux.sh \
+  --apt-mirror http://mirrors.ustc.edu.cn/ubuntu \
+  --rust-mirror https://rsproxy.cn \
+  --npm-registry https://registry.npmmirror.com \
+  --cargo-index "sparse+https://rsproxy.cn/index/" \
+  --mirror https://gh-proxy.com            # GitHub 上的 AppImage 工具
+```
+
+写 AppImage 用的 `linuxdeploy` 由 `scripts/linux/fetch-appimage-tools.sh` 先抓下来放进
+镜像，绕开打包时对 GitHub 的访问。
+
+验证装好的包（起一个虚拟显示，等后端回答）：
+
+```bash
+scripts/linux/smoke-test.sh x86_64
+```
+
+编译器缓存放在 Docker volume 里（`lm-lathe-cargo-registry`、`lm-lathe-cargo-target`），
+第二次构建只编译改动过的部分。`.github/workflows/linux-packages.yml` 在 Ubuntu 机器
+上做同样的事，把包作为构建产物传上去。
+
 ---
 
 ## 使用
